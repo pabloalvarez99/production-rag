@@ -1,2 +1,103 @@
-data/processed/
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- Virtual environments ---------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# --- Tooling caches ---------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+.tox/
+.nox/
+.cache/
+.hypothesis/
+
+# --- Coverage ---------------------------------------------------------------
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+nosetests.xml
+*.cover
+
+# --- Secrets and local configuration ---------------------------------------
+# Never commit a real .env. `.env.example` is the documented template and is
+# tracked on purpose.
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+
+# --- Model weights and caches ----------------------------------------------
+# A local reranker (bge-reranker-base) and embedding models land here. They are
+# large, reproducible from a download, and must never enter git history.
+*.pt
+*.bin
+*.onnx
+*.safetensors
+.cache/huggingface/
+models/
+
+# --- Data -------------------------------------------------------------------
+# Raw corpora are inputs the operator supplies; processed chunks and vector
+# dumps are derived artefacts. Sample fixtures under data/raw/sample stay
+# tracked so the quickstart works on a fresh clone.
+data/processed/*
+!data/processed/.gitkeep
+!data/processed/README.md
+data/interim/
+data/eval/runs/
+data/**/*.parquet
+!data/raw/sample/**
+
+# --- Docker -----------------------------------------------------------------
+# Per-machine compose tweaks (extra ports, bind mounts) stay local.
+docker-compose.override.yml
+
+# --- Local vector store ----------------------------------------------------
+qdrant_storage/
+storage/
+
+# --- Observability ---------------------------------------------------------
+.langfuse/
+*.log
+logs/
+
+# --- Editors and OS --------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini

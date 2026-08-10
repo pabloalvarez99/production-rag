@@ -45,6 +45,76 @@ footprint stays at two containers.
 6. The query pipeline is orchestrated as a LangGraph graph so steps are
    observable and individually testable (see [ADR 0002](adr/0002-langgraph-query.md)).
 
+### Stage pipeline
+
+```
+  POST /v1/query
+  { "question": … }
+        │
+        ▼
+  ┌───────────────┐
+  │ 1. NORMALISE  │  validate, attach request id, optional query rewrite
+  └───────┬───────┘
+          │ query text
+   ┌──────┴──────────────────────────┐
+   ▼                                 ▼
+┌──────────────────────┐   ┌──────────────────────┐
+│ 2a. DENSE RETRIEVAL  │   │ 2b. SPARSE RETRIEVAL │
+│ embed(query) → kNN   │   │ BM25 over term vecs  │
+│ Qdrant `dense`       │   │ Qdrant `sparse`      │
+│ 40 candidates        │   │ 40 candidates        │
+│ wins on paraphrase   │   │ wins on exact tokens │
+└──────────┬───────────┘   └───────────┬──────────┘
+           └───────────┬───────────────┘
+                       ▼
+        ┌──────────────────────────────┐
+        │ 3. FUSE — reciprocal rank    │  score = Σ 1/(k + rank), k = 60
+        │    fusion, rank-based so the │  no score-scale calibration,
+        │    two scales never need     │  nothing to drift as the corpus
+        │    calibrating → top 12      │  grows
+        └──────────────┬───────────────┘
+                       ▼
+        ┌──────────────────────────────┐
+        │ 4. RERANK — cross-encoder    │  disabled in M0; fail-open, so a
+        │    40 in → 6 out             │  reranker error degrades to fusion
+        └──────────────┬───────────────┘  order instead of failing the call
+                       ▼
+        ┌──────────────────────────────┐
+        │ 5. GENERATE                  │  6k-token context budget,
+        │    temperature 0.1, stream   │  refuses when evidence is absent
+        └──────────────┬───────────────┘
+                       ▼
+        ┌──────────────────────────────┐
+        │ 6. CITE                      │  map [n] markers back to
+        │                              │  chunk_id + source_path
+        └──────────────┬───────────────┘
+                       ▼
+   { answer, citations[], usage, trace_id, latency_ms }
+```
+
+Each numbered stage is one LangGraph node with its own timing, which is what
+populates the per-stage `latency_ms` breakdown in the response — the first
+thing the [runbook](runbook.md) tells an operator to read when a query is slow.
+
+### Why hybrid rather than dense-only
+
+Dense retrieval fails predictably on rare literal tokens (SKUs, error codes,
+function names); sparse retrieval fails just as predictably on paraphrase.
+Running both costs one extra Qdrant query on the same round trip and removes an
+entire class of "the document is right there and it didn't find it" bugs. Rank
+fusion is used instead of weighted score blending because cosine similarity and
+BM25 scores live on incomparable scales. See
+[ADR 0001](adr/0001-hybrid-qdrant.md).
+
+### Failure behaviour
+
+| Failure | Behaviour | Rationale |
+|---|---|---|
+| Qdrant unreachable | `/v1/ready` reports not ready; `/health` still 200 | liveness must not depend on a dependency, or an orchestrator kills a healthy process |
+| Reranker error or timeout | fall through to fusion order | availability over a few points of nDCG |
+| Embedding provider 429 | bounded retry with backoff, then 503 | a silent empty result set is indistinguishable from "no matches" |
+| No chunk clears the threshold | explicit refusal | an unsupported answer is worse than no answer |
+
 ## Ingest flow (offline path)
 
 1. Markdown/text files under `data/raw/` are walked per
