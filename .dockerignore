@@ -1,0 +1,57 @@
+# Keep the build context small and deterministic.
+# Anything not needed to `pip install -e .` and boot uvicorn stays out.
+
+# --- VCS / tooling -----------------------------------------------------------
+.git
+.gitignore
+.github
+.vscode
+.idea
+
+# --- Python environments and build artifacts ---------------------------------
+.venv
+venv
+env
+**/__pycache__
+**/*.py[cod]
+*.egg-info
+.eggs
+build
+dist
+
+# --- Caches ------------------------------------------------------------------
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+.cache
+.tox
+
+# --- Tests and notebooks (not shipped in the runtime image) ------------------
+tests
+notebooks
+*.ipynb
+
+# --- Secrets: must never enter an image layer --------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Data ---------------------------------------------------------------------
+# Derived artifacts are rebuilt by the ingest job, never baked in.
+data/processed
+# Raw corpora are bind-mounted at runtime; only the tiny sample docs would be
+# small enough to bake, and even those are better mounted for parity.
+data/raw
+data/eval
+
+# --- Docs and ops files (change often, would bust the cache for nothing) ------
+docs
+Makefile
+docker-compose.yml
+docker-compose.*.yml
+.dockerignore
+scripts

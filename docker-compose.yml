@@ -1,0 +1,101 @@
+# Local production-like stack for production-rag.
+#
+# Two services only: the vector store and the API. Everything else the app
+# needs (embeddings, LLM) is an outbound HTTPS call, so it needs no container.
+#
+#   docker compose up -d --build
+#   docker compose ps
+#   docker compose down          # keeps the qdrant_storage volume
+#   docker compose down -v       # drops the vector index too
+#
+# Image tags are pinned on purpose: an unpinned `latest` silently changes the
+# storage format between machines and breaks reproducibility of eval runs.
+
+name: production-rag
+
+services:
+  # ---------------------------------------------------------------------------
+  # Qdrant — vector + payload store. Holds both the dense vectors and the
+  # sparse (BM25-style) vectors used by hybrid retrieval, plus chunk payloads.
+  # ---------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:v1.13.2 # pinned: hybrid query API + named sparse vectors
+    container_name: production-rag-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333" # REST API + web dashboard at http://localhost:6333/dashboard
+      - "6334:6334" # gRPC API (faster batch upserts during ingest)
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: 6334
+      QDRANT__LOG_LEVEL: INFO
+      QDRANT__TELEMETRY_DISABLED: "true"
+    volumes:
+      # Named volume, not a bind mount: Qdrant does its own fsync-heavy IO and
+      # bind mounts on Windows/macOS make that pathologically slow.
+      - qdrant_storage:/qdrant/storage
+    healthcheck:
+      # The Qdrant image is distroless-ish and ships no curl/wget, but it does
+      # ship a `qdrant` binary with a readiness subcommand. Fall back to a bash
+      # TCP probe so this works on older tags too.
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - ragnet
+
+  # ---------------------------------------------------------------------------
+  # API — FastAPI app (production_rag.main:app) serving /v1/query and friends.
+  # Owned by agent A1; this compose file only runs it.
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: production-rag-api:local
+    container_name: production-rag-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Service discovery inside the compose network: hostname == service name.
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-production_rag}
+      APP_NAME: ${APP_NAME:-production-rag}
+      ENVIRONMENT: local
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      HOST: 0.0.0.0
+      PORT: "8000"
+      CONFIG_PATH: /app/configs/default.yaml
+      # Secrets are never written here. They come from .env (gitignored),
+      # which Compose loads automatically from the project root.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    env_file:
+      # Optional: `docker compose` warns but does not fail if .env is absent.
+      - path: .env
+        required: false
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    volumes:
+      # Read-only mounts so config and corpora can change without a rebuild.
+      - ./configs:/app/configs:ro
+      - ./data:/app/data:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s # first boot loads the embedding model client
+    networks:
+      - ragnet
+
+volumes:
+  qdrant_storage:
+    name: production-rag-qdrant-storage
+
+networks:
+  ragnet:
+    name: production-rag-net
+    driver: bridge

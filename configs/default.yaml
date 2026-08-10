@@ -1,0 +1,260 @@
+# production-rag — default runtime configuration.
+#
+# Scope note: this file is deliberately broader than what M0 consumes. The
+# milestone only wires ingest + hybrid retrieval + generation; the rerank,
+# evals and observability blocks are declared now so that later milestones
+# change values, not shape. A key existing here is not a promise that the
+# runtime reads it yet — see docs/architecture.md for what is live.
+#
+# Precedence (lowest to highest):
+#   1. this file
+#   2. a profile file passed via CONFIG_PATH
+#   3. environment variables (see .env.example)
+#
+# Secrets never live here. Only pointers to env var names.
+
+app:
+  name: production-rag
+  version: 0.1.0
+  environment: local # local | staging | production
+  # Public base path for every versioned route. Unversioned /health stays
+  # outside it so probes survive an API version bump.
+  api_prefix: /v1
+
+# ---------------------------------------------------------------------------
+# Ingest — corpus to chunks to vectors.
+# ---------------------------------------------------------------------------
+ingest:
+  source_dir: data/raw
+  processed_dir: data/processed
+  # Only extensions listed here are walked; anything else is skipped loudly so
+  # a silently ignored PDF never looks like an empty corpus.
+  include_extensions: [".md", ".markdown", ".txt"]
+  exclude_globs:
+    - "**/.*"
+    - "**/node_modules/**"
+
+  chunking:
+    # Recursive splitting on structural boundaries first (headings, then
+    # paragraphs, then sentences), falling back to a hard character cut.
+    strategy: recursive
+    chunk_size: 800 # characters, not tokens: cheaper to compute, close enough
+    chunk_overlap: 120 # ~15%: enough to keep a sentence straddling a boundary
+    min_chunk_chars: 120 # drop fragments that carry no retrievable signal
+    separators: ["\n## ", "\n### ", "\n\n", "\n", ". ", " "]
+    # Prefix each chunk with its document title + heading path before
+    # embedding. Cheap, and measurably helps on short queries.
+    prepend_heading_context: true
+
+  embedding:
+    provider: openai
+    model: text-embedding-3-small
+    dimensions: 1536
+    batch_size: 128
+    # Env var *name*, never the value.
+    api_key_env: OPENAI_API_KEY
+    max_retries: 5
+    timeout_seconds: 30
+
+  sparse:
+    # Lexical side of the hybrid index. BM25 statistics are computed over the
+    # corpus at ingest time and stored as a named sparse vector in Qdrant.
+    enabled: true
+    method: bm25
+    k1: 1.2
+    b: 0.75
+    lowercase: true
+    # Empty means "language default"; set explicitly when the corpus is not
+    # English, because a wrong stopword list quietly degrades recall.
+    stopwords: english
+
+  # Skip re-embedding chunks whose content hash is unchanged. Ingest is the
+  # only place this project spends real money, so incremental is the default.
+  incremental: true
+  hash_algorithm: sha256
+
+# ---------------------------------------------------------------------------
+# Retrieval — hybrid dense + sparse with server-side fusion.
+# ---------------------------------------------------------------------------
+retrieval:
+  mode: hybrid # dense | sparse | hybrid
+  # Candidates pulled from each branch before fusion. Deliberately larger than
+  # top_k: fusion can only reorder what it was given.
+  dense_top_k: 40
+  sparse_top_k: 40
+  # Documents handed to the next stage (rerank if enabled, else generation).
+  top_k: 12
+  fusion:
+    method: rrf # reciprocal rank fusion — score-scale agnostic
+    k: 60 # RRF smoothing constant; standard value from the original paper
+    # Relative pull of each branch. Equal weights until evals say otherwise.
+    dense_weight: 1.0
+    sparse_weight: 1.0
+  # Hard floor on fused score. 0.0 disables it; raise only with eval evidence,
+  # since a threshold that is too high turns recall misses into silent empties.
+  score_threshold: 0.0
+  # Payload keys returned with each hit. Keep this tight: every extra field is
+  # tokens in the generation prompt.
+  return_payload_fields: [doc_id, chunk_id, title, source_path, heading_path, text]
+  filters:
+    # Metadata filters the query API is allowed to accept, as an allowlist.
+    allowed_fields: [source, title, tags, created_at]
+
+# ---------------------------------------------------------------------------
+# Rerank — cross-encoder pass over fused candidates. Off in M0.
+# ---------------------------------------------------------------------------
+rerank:
+  enabled: false
+  provider: cohere # cohere | local-cross-encoder | none
+  model: rerank-english-v3.0
+  api_key_env: COHERE_API_KEY
+  # Feed the reranker more than you keep; it is the stage that can recover a
+  # relevant chunk fusion buried at rank 30.
+  input_top_k: 40
+  top_k: 6
+  timeout_seconds: 15
+  # If the reranker errors or times out, fall through to fusion order rather
+  # than failing the request. Availability beats a few points of nDCG.
+  fail_open: true
+
+# ---------------------------------------------------------------------------
+# Generation — answer synthesis with mandatory citations.
+# ---------------------------------------------------------------------------
+generation:
+  provider: openai
+  model: gpt-4o-mini
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.1 # near-deterministic: this is extraction, not authoring
+  max_output_tokens: 800
+  # Budget for retrieved context. Chunks are dropped from the tail once this
+  # is exceeded, so retrieval order is also truncation order.
+  max_context_tokens: 6000
+  timeout_seconds: 60
+  max_retries: 3
+  stream: true
+
+  citations:
+    enabled: true
+    # Inline markers referencing the ordinal of a retrieved chunk, e.g. [2].
+    style: bracketed_index
+    require_citation: true
+    # When the context does not support an answer, say so instead of guessing.
+    # This is the single highest-leverage setting for perceived quality.
+    refuse_without_evidence: true
+    refusal_message: >-
+      I could not find support for that in the indexed documents.
+
+  prompt:
+    system_path: configs/prompts/system.md # created by A1's prompt work
+    include_heading_path: true
+    max_chunks_in_prompt: 8
+
+# ---------------------------------------------------------------------------
+# Qdrant — vector store topology.
+# ---------------------------------------------------------------------------
+qdrant:
+  # Overridden by QDRANT_URL. Inside compose that is http://qdrant:6333.
+  url: http://localhost:6333
+  collection: production_rag
+  api_key_env: QDRANT_API_KEY # unset locally; required for Qdrant Cloud
+  prefer_grpc: false # REST for local debuggability; gRPC for bulk ingest
+  timeout_seconds: 30
+
+  vectors:
+    dense:
+      name: dense
+      size: 1536 # must match ingest.embedding.dimensions
+      distance: Cosine
+    sparse:
+      name: sparse
+      # Sparse vectors are not IDF-weighted by Qdrant itself; the ingest side
+      # owns BM25 term weighting.
+      modifier: idf
+
+  hnsw:
+    m: 16
+    ef_construct: 128
+    full_scan_threshold: 10000 # below this, brute force is faster than HNSW
+  search:
+    hnsw_ef: 128 # search-time breadth; raise for recall, costs latency
+
+  optimizers:
+    default_segment_number: 2
+    indexing_threshold: 20000
+  # Payload fields that get a keyword index so filters stay O(log n).
+  payload_indexes:
+    - field: doc_id
+      schema: keyword
+    - field: source
+      schema: keyword
+    - field: tags
+      schema: keyword
+
+  on_disk_payload: true
+  # Ingest writes: wait for the operation to be applied before returning, so a
+  # smoke test right after ingest cannot read a half-built index.
+  write_consistency: wait
+
+# ---------------------------------------------------------------------------
+# Evals — offline quality gates. See docs/evaluation.md.
+# ---------------------------------------------------------------------------
+evals:
+  dataset_path: data/eval/golden.jsonl
+  results_dir: data/processed/eval-runs
+  # Retrieval metrics are computed from the golden relevant chunk ids; answer
+  # metrics need an LLM judge and cost money, hence the separate switch.
+  retrieval:
+    enabled: true
+    metrics: [recall@k, mrr, ndcg@k]
+    k_values: [1, 3, 5, 10]
+  answer:
+    enabled: false
+    judge_provider: openai
+    judge_model: gpt-4o
+    metrics: [faithfulness, answer_relevance, citation_precision]
+    # Judge runs are sampled to keep cost bounded; raise before a release.
+    sample_size: 50
+  # A run fails when any threshold below is missed. These are the numbers that
+  # turn "seems better" into a merge gate.
+  thresholds:
+    recall_at_5: 0.80
+    mrr: 0.65
+    faithfulness: 0.90
+  # Fixed seed so two runs over the same dataset are comparable.
+  seed: 42
+
+# ---------------------------------------------------------------------------
+# Observability — structured logs now, traces when Langfuse is configured.
+# ---------------------------------------------------------------------------
+observability:
+  logging:
+    level: INFO # overridden by LOG_LEVEL
+    format: json # json in containers, console for local TTY debugging
+    # Never log prompt or document text at INFO: it is the easiest way to leak
+    # customer data into a log aggregator.
+    log_prompts: false
+    log_retrieved_text: false
+    include_request_id: true
+
+  tracing:
+    enabled: false
+    provider: langfuse
+    public_key_env: LANGFUSE_PUBLIC_KEY
+    secret_key_env: LANGFUSE_SECRET_KEY
+    host_env: LANGFUSE_HOST
+    sample_rate: 1.0
+
+  metrics:
+    enabled: true
+    # Prometheus-compatible exposition on the API itself.
+    path: /metrics
+    # Buckets tuned for a RAG request: retrieval is tens of ms, generation is
+    # seconds, so a default linear histogram would be useless.
+    latency_buckets_seconds: [0.1, 0.25, 0.5, 1, 2, 5, 10, 30]
+
+  health:
+    liveness_path: /health
+    readiness_path: /v1/health
+    # Readiness checks its dependencies; liveness must not, or a Qdrant blip
+    # would get the API container killed by the orchestrator.
+    readiness_checks: [qdrant]
