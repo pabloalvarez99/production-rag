@@ -15,7 +15,7 @@ Everything else is still design.
 |---|---|
 | `data/eval/golden.jsonl` | **committed** — 14-item seed set, document-level labels |
 | Retrieval metrics (`hit@k` over source paths) | **runnable** — `scripts/eval_hit.py`, `make eval-hit-fake` |
-| Pre- vs post-rerank `hit@k` on the same set | **runnable by hand** — two runs, one comparison; see [below](#pre--and-post-rerank-hitk) |
+| Pre- vs post-rerank `hit@k` on the same set | **runnable** — `--rerank off` then `--rerank local`, one comparison; see [below](#pre--and-post-rerank-hitk) |
 | Retrieval metrics (`recall@k`, `mrr`, `ndcg@k` over chunk ids) | needs chunk-level labels; not written yet |
 | `nDCG`, the metric reranking actually moves | needs graded chunk-level labels; M6 |
 | Ragas / LLM-judge answer metrics | needs generated answers; M4 at the earliest |
@@ -74,13 +74,11 @@ docker compose run --rm api python scripts/eval_hit.py --embedder openai --reran
 .\scripts\eval_hit.ps1 -Embedder openai -Rerank local      # reranked
 ```
 
-> `--rerank` on the eval script is the **agreed interface** for the ablation, not
-> a claim that it has landed: the flag takes the same values as the retrieve
-> command (`off`, `fake`, `local`, `cohere`, `auto`) and passes straight through
-> to the retriever. Until it exists, run the ablation by toggling
-> `rerank.enabled` / `rerank.provider` in a config profile and passing
-> `--config`, which changes exactly the same thing. Either way the script
-> reports and never gates.
+> `--rerank` takes the same values as the retrieve command — `off` (the default,
+> so a score stays comparable with the M2 baseline), `fake`, `local`, `cohere`,
+> `auto` — and passes straight through to the retriever. Toggling
+> `rerank.enabled` / `rerank.provider` in a config profile and passing `--config`
+> changes the same thing. Either way the script reports and never gates.
 
 ### Where the delta should show up, and where it should not
 

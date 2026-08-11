@@ -83,8 +83,9 @@
     YAML config to load. Default configs/default.yaml
 
 .PARAMETER Json
-    Emit only the JSON result object, no human-readable table. Ignored with
-    -Compare, which always prints both runs.
+    Suppress this wrapper's commentary so stdout carries only the job's output,
+    whose last line is a single JSON object. Ignored with -Compare, which always
+    prints both runs and their headers.
 
 .PARAMETER OnHost
     Run against the host interpreter instead of the api container.
@@ -150,8 +151,10 @@ function Invoke-Retrieve {
     )
     if ($TopK) { $jobArgs += @('--top-k', "$TopK") }
     if ($Collection) { $jobArgs += @('--collection', $Collection) }
-    if ($Json -and -not $Compare) { $jobArgs += '--json' }
 
+    # No --json flag is passed: the job already writes its logs to stderr and a
+    # single JSON object as the last line of stdout. -Json here only suppresses
+    # this wrapper's own commentary, so the stdout stream stays parseable.
     $announce = -not ($Json -and -not $Compare) -and -not $Quiet
 
     if ($OnHost) {
