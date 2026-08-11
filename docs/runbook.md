@@ -690,7 +690,199 @@ decided what the model was allowed to cite. Truncation is also logged as
 > **Never turn on `observability.logging.log_prompts` or `log_retrieved_text` in
 > a deployment.** The prompt contains corpus text verbatim, so a log aggregator
 > with those enabled becomes a copy of the corpus with none of its access
-> controls. They exist for a local debugging session and default to `false`.
+> controls. They exist for a local debugging session and default to `false`. Full
+> warning: [below](#never-turn-on-log_prompts-in-a-deployment).
+
+## Observability (M5)
+
+Three signals, and the order to read them in. Design rationale:
+[ADR 0006](adr/0006-observability.md); the shape of each surface is in
+[architecture](architecture.md#observability-m5).
+
+| Signal | Where it lives | Read it when |
+|---|---|---|
+| `timings_ms` / `latency_ms` per node | library result, `debug` response, `query_completed` log | an answer is slow |
+| Structured logs keyed by `request_id` | `docker compose logs api` | anything else |
+| Traces | Langfuse, only if it is configured | you want prompt/answer history across many requests, and have accepted sending them |
+
+Nothing here needs configuring to work. Timings and logs are always on; tracing
+is off until three environment variables are set.
+
+### Debug a slow query
+
+**1. Get the per-node breakdown.** It exists on every request; the CLI is the
+fastest way to see it because it is inside the trust boundary and can print the
+whole library object.
+
+```powershell
+docker compose run --rm api python -m production_rag.query `
+    --question "how does reciprocal rank fusion work" --llm fake --debug |
+    Select-Object -Last 1 | ConvertFrom-Json |
+    Select-Object -ExpandProperty latency_ms
+```
+
+```bash
+docker compose run --rm api python -m production_rag.query \
+    --question "how does reciprocal rank fusion work" --llm fake --debug \
+  | tail -1 | jq '{latency_ms, total_ms, hits_used, hits_retrieved}'
+```
+
+Over HTTP the same numbers need `"debug": true`, and the response carries only
+the safe subset — timings, hit counts, the rerank summary, `invalid_markers`.
+Never the collection name, the model or any prompt text: `debug` is set by the
+caller, so it can only expose what would be safe to publish.
+
+```bash
+curl -s localhost:8000/v1/query -H 'content-type: application/json' \
+  -H 'X-Request-ID: slow-query-1' \
+  -d '{"question": "…", "debug": true}' | jq '.diagnostics.timings_ms'
+```
+
+**2. Read which node dominates.** One number, one suspect:
+
+| Dominant node | Meaning | First dial |
+|---|---|---|
+| `generate` | normal — it is the only stage that waits on a hosted model | `generation.max_output_tokens`, then the model |
+| `rerank` | a cross-encoder over 40 candidates is 40 forward passes | `rerank.input_top_k`; or `--rerank off` to confirm |
+| `retrieve` | Qdrant, or the query embed — not the LLM | collection size, `hnsw_ef`, `dense_top_k` / `sparse_top_k` |
+| `cite` / `finalise` / `guard` | should be sub-millisecond; anything else is a bug | open an issue with the request id |
+
+`total_ms` is the sum of the nodes, so it is smaller than the client's
+round trip and than `X-Response-Time-ms` on the response header. The gap between
+the two is transport and framework overhead, and a large one moves the
+investigation out of the pipeline entirely.
+
+**3. If it was a past request, use the id instead.** The timings are in the
+`query_completed` log line, keyed by the request id that came back on the
+`X-Request-ID` header:
+
+```powershell
+docker compose logs api | Select-String "slow-query-1"
+```
+
+```bash
+docker compose logs api | grep slow-query-1 | jq -c 'select(.event=="query_completed") | {timings_ms, hits, refused}'
+```
+
+Every line the request emitted carries that id — the access log, the retrieval
+calls, the rerank warning, the generation call, the finalise summary. That is the
+whole reason it exists; quote it in any bug report.
+
+**4. Latency is not the only thing the same read answers.** Two fields on the
+same object explain most "the answer looks wrong" reports without a rerun:
+
+- `hits_used` below `hits_retrieved` — the context budget dropped the tail, so
+  the model was never shown what you assume it saw. Retrieval order is truncation
+  order. Also logged as `context_truncated` with kept/dropped counts.
+- `invalid_markers` non-empty — the model emitted `[n]` that resolve to nothing.
+  They are stripped from the answer, so this field is the only place the
+  misbehaviour is visible. One is noise; a steady stream is a model or prompt
+  problem.
+
+### Enable tracing (Langfuse)
+
+Off by default, and the whole system works without it — offline, in CI, and on a
+laptop with no credentials. Turn it on when you want prompt and answer history
+across many requests, and only after deciding that is acceptable for the corpus.
+
+```yaml
+# configs/default.yaml (or a profile passed via CONFIG_PATH)
+observability:
+  tracing:
+    enabled: true
+    sample_rate: 1.0     # lower it to bound volume, not sensitivity
+```
+
+```bash
+# .env — gitignored, loaded by compose. Names live in config; values only here.
+LANGFUSE_PUBLIC_KEY=...
+LANGFUSE_SECRET_KEY=...
+LANGFUSE_HOST=https://cloud.langfuse.com
+```
+
+```powershell
+docker compose up -d --force-recreate api      # env changes need a recreate
+```
+
+Rules that come with it:
+
+- **All three variables, or it stays off.** A partial configuration does not half
+  enable tracing; it does not enable it.
+- **Never put a key in `configs/*.yaml`.** The config file holds the env-var
+  *name* (`public_key_env`, `secret_key_env`, `host_env`), never the value. Same
+  rule as every other credential in this project. `.env` is gitignored and
+  dockerignored; a key passed as a CLI flag lands in shell history and in
+  `docker inspect`.
+- **A trace backend outage is not an outage.** The exporter fails open: the
+  request still answers, and the failure is logged. If traces stop appearing,
+  check the API logs before assuming requests are failing — they are not.
+- **Self-hosting changes nothing except `LANGFUSE_HOST`.** Point it at your own
+  instance if the corpus may not leave your infrastructure.
+
+**Tracing sends prompts and answers to the trace backend.** That is what a
+generation trace is; there is no version of it that exports the latency without
+the content. `sample_rate` reduces how many requests are exported, not what an
+exported request contains. Deciding to enable it is a data-processing decision
+about the corpus, not a toggle — the same conversation as adding any other
+processor.
+
+### Never turn on `log_prompts` in a deployment
+
+`observability.logging.log_prompts` and `observability.logging.log_retrieved_text`
+default to `false`. They exist for a local debugging session on a corpus you own,
+on a machine whose logs go nowhere. Leave them off everywhere else.
+
+The prompt contains retrieved corpus text **verbatim**. With those switches on, a
+log aggregator becomes a full copy of the corpus with none of its access
+controls — usually readable by everyone with a dashboard login, usually retained
+for months, and usually replicated somewhere nobody has audited. It is the
+cheapest data leak available in this system and it produces no error.
+
+Two related rules that hold regardless of any switch:
+
+- **Provider error bodies are never echoed.** An upstream error can quote the
+  request that produced it, which for a generation call is the entire prompt. The
+  client gets a status and a stable message; the CLI prints the exception *type*.
+  Do not "improve" either by passing the provider message through.
+- **The question text is logged, on purpose, once** (`query_completed`). It is
+  user-supplied rather than corpus content and it is what makes a report
+  correlatable. If your deployment handles sensitive questions, drop that field
+  at the aggregator rather than losing the event.
+
+If you turned them on locally, turn them off before the config change goes
+anywhere near a shared environment, and treat any log archive written while they
+were on as a copy of the corpus.
+
+### Observability failures
+
+**No `request_id` on log lines.**
+The line was emitted outside a request — a CLI run, or startup. The middleware
+binds the id per request; a CLI generates its own UUID4 per invocation and does
+not print it. For a CLI investigation, correlate by time and command instead.
+
+**`debug: true` returns no diagnostics.**
+Check the response actually round-tripped the flag (`extra="forbid"` means a
+misspelling is a 422, not a silent default) and that the deployment is M5 or
+later. The library result carries timings regardless — the endpoint is the only
+surface that gates them.
+
+**Traces do not appear in Langfuse.**
+In order: `observability.tracing.enabled` is `true`; all three environment
+variables are present *inside the container* (`docker compose config` shows the
+resolved environment — do not paste its output into a ticket); `sample_rate` is
+not `0`; and the API logs mention an exporter error. Requests answering normally
+while traces are missing is the fail-open path working as designed.
+
+**Timings look impossibly fast.**
+Almost always `--llm fake` (no provider call at all) or a warm rerank model.
+Numbers from the fake providers measure the plumbing, not the path a user would
+take — the same caveat that applies to every other `fake` in this project.
+
+**`total_ms` does not match what the client observed.**
+Expected. `total_ms` sums the graph nodes; `X-Response-Time-ms` is server-side
+handling including validation, serialisation and middleware; the client also
+pays network and connection setup. Three different measurements of three
+different things.
 
 ## Day-to-day commands
 

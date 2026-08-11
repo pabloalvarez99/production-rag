@@ -15,6 +15,10 @@ what is measured**.
 That distinction is the whole point of this section, so it is stated once,
 plainly: **M4 makes answer evaluation possible; M6 is when it happens.**
 
+M5 changes nothing about it either. Observability made the request path report on
+itself — timings, `invalid_markers`, `hits_used` — and none of those is a quality
+number; see [ops signals are not eval metrics](#ops-signals-are-not-eval-metrics).
+
 | Piece | State |
 |---|---|
 | `data/eval/golden.jsonl` | **committed** — 14-item seed set, document-level labels |
@@ -78,6 +82,44 @@ this repository, and none should be until M6 runs. Specifically:
   the seed set does not have yet. Until it does, a low refusal rate is not
   evidence of good grounding — it is evidence that every question asked was
   answerable.
+
+### Ops signals are not eval metrics
+
+M5 made the request path report on itself: per-node `timings_ms`, `invalid_markers`,
+`hits_used` vs `hits_retrieved`, the `rerank` summary, `refusal_reason`
+([ADR 0006](adr/0006-observability.md)). Every one of those is produced on every
+request, for free, with no judge and no labels. That is exactly what makes them
+tempting to quote as quality, and exactly why they are not.
+
+The distinction is one line: **an ops signal says what the system did; an eval
+metric says whether it was right.** Nothing in the first column below needs a
+golden set, and nothing in it can replace one.
+
+| Ops signal (live, every request) | What it detects | The eval metric it is *not* |
+|---|---|---|
+| `timings_ms` per node | which stage got slow | nothing — latency is not quality, and a fast wrong answer scores perfectly here |
+| `invalid_markers` | the model emitting markers that resolve to nothing | `citation_precision`. Zero invalid markers says nothing about whether the markers that *did* resolve support their sentences |
+| `hits_used` vs `hits_retrieved` | the context budget truncated the tail | `recall@k`. It separates a truncation failure from a retrieval failure; it does not measure either |
+| `rerank.applied` / `rerank.error` | the reranker failed open and ordering quality dropped silently | `nDCG`. It says the stage ran, not that it ordered well |
+| `refusal_reason` | which of the four refusal paths fired | `refusal_accuracy`, which needs an `unanswerable` slice to compare against |
+
+Read the columns in the right order and they are complements rather than rivals.
+An ops signal moving is the *prompt* to run an eval; an eval number moving is the
+prompt to read the ops signals for a mechanism. What neither of them does is
+substitute for the other:
+
+- **A dashboard of ops signals cannot gate a merge.** All five are green for a
+  system that answers every question fluently and wrongly, provided it cites
+  something.
+- **An eval run cannot diagnose.** `hit@5` dropping tells you nothing about
+  whether the reranker has been failing open since Tuesday. That is in the logs.
+
+Two of these are worth counting over the golden set even before M6, because they
+cost a `--llm fake` run and no judge: a non-empty `invalid_markers` across many
+items is a model or prompt problem, and a systematic `hits_used` far below
+`hits_retrieved` means the context budget — not retrieval — is deciding what gets
+cited. Both are findings about the *system*, reportable without a quality claim
+attached.
 
 ### Counting refusals today, honestly
 
@@ -410,8 +452,10 @@ not a finding.
 
 ## What is deliberately not measured yet
 
-- **Latency under concurrency.** Single-request latency is reported per stage
-  in every response; load testing waits until the deployment target is real.
+- **Latency under concurrency.** Single-request latency is recorded per stage on
+  every request (library result and logs always; the HTTP response only under
+  `debug`), but per-request timings say nothing about behaviour under load. Load
+  testing waits until the deployment target is real.
 - **Cost per query.** The provider reports prompt and completion tokens on the
   generation call, but nothing aggregates them yet and the query result does not
   carry them; a per-query cost figure is a later milestone.

@@ -726,6 +726,108 @@ failure modes, [data model](docs/data-model.md#citation) for the `Citation` and
 `QueryResponse` shapes, [evaluation](docs/evaluation.md#status-after-m4) for what
 M4 made measurable versus what M6 will measure.
 
+## Observability (M5)
+
+M5 adds no stage. It makes the stages that exist legible, and it does so without
+putting a vendor on the critical path: **structured logs and per-node timings are
+always on and carry no third party; tracing is an opt-in export the system is
+complete without** ([ADR 0006](docs/adr/0006-observability.md)).
+
+The problem is specific to what M4 built. Through M3 a question was one Qdrant
+round trip, so "it was slow" had one suspect. A question is now an embedding
+call, two searches, a possible rerank provider call, an LLM call and two
+guardrail checks — and the interesting failures there do not raise. The answer
+was thin because the context budget truncated. The reranker has been failing open
+for a week. The model is emitting citation markers that get stripped before
+anyone sees them. Those are numbers the system either records or does not.
+
+### Timings, always, per stage
+
+Every graph node is timed on every request — no flag, no sampling. The cost is a
+`perf_counter()` pair per stage; the alternative is asking an operator to
+reproduce a slow request that already happened.
+
+```console
+$ python -m production_rag.query --question "how does RRF work" --llm fake --debug | tail -1 | jq '{latency_ms, total_ms}'
+{
+  "latency_ms": {"retrieve": 41.2, "rerank": 0.0, "guard": 0.1, "generate": 812.6, "cite": 0.4, "finalise": 0.2},
+  "total_ms": 854.5
+}
+```
+
+A **per-node** breakdown rather than one total, because the first question about
+a slow answer is *which stage* and a total cannot answer it: `generate`
+dominating is normal, `rerank` dominating is `input_top_k`, `retrieve` dominating
+points at Qdrant rather than the LLM.
+
+### `debug` is caller-controlled, so it shows shape and never secrets
+
+The HTTP response stays four fields. `debug: true` adds a `diagnostics` object —
+and because anyone who can call the endpoint can set that flag, it may only carry
+what would be safe to publish:
+
+| Exposed under `debug` | Withheld regardless |
+|---|---|
+| per-node timings and the total | prompt text, system prompt, rendered blocks |
+| `hits_retrieved` / `hits_used` | passage text beyond the citations already returned |
+| `rerank` summary — `applied`, `candidates`, `error` | collection name, embedder, model, provider identity |
+| `invalid_markers` | credentials, in any form, at any level |
+
+`debug` answers *what the system did*, never *what the system knows*. The CLI
+differs on one axis only — it already runs inside the trust boundary, so
+`--debug` prints the whole library object.
+
+### The three signals that need no judge
+
+Produced by the request path itself, on every request, with no labels and no
+LLM: **`timings_ms`** (which stage got slow), **`invalid_markers`** (the model
+inventing citations — they are stripped from the answer, so this field is the
+only place the misbehaviour is visible), **`hits_used` vs `hits_retrieved`** (the
+context budget truncated, so retrieval order was truncation order).
+
+None of them is a quality metric, and the distinction is load-bearing rather than
+pedantic: an ops signal says what the system did, an eval metric says whether it
+was right. Zero invalid markers says nothing about whether the markers that *did*
+resolve support their sentences — that needs the M6 judge. See
+[evaluation](docs/evaluation.md#ops-signals-are-not-eval-metrics).
+
+### Tracing is optional, and offline is the reference environment
+
+Langfuse, off by default, configured by three environment variables referenced in
+`configs/default.yaml` **by name** — never a value in a committed file. Every
+command, the endpoint, the CLI, the tests and the eval script run with nothing
+configured and no network to a trace backend, and a trace backend that is down,
+slow or misconfigured loses a diagnostic rather than a request (fail-open, in the
+same sense as the reranker).
+
+What it costs when it is on, stated plainly: a generation trace *is* the prompt
+and the answer, sent to a third party. `sample_rate` bounds volume, not
+sensitivity. Enabling it is a decision about where corpus text may go.
+
+> **Never turn on `observability.logging.log_prompts` or `log_retrieved_text` in
+> a deployment.** The prompt contains retrieved corpus text verbatim, so a log
+> aggregator with those on becomes a full copy of the corpus with none of its
+> access controls — readable by everyone with a dashboard login, retained for
+> months. It is the cheapest data leak this system offers and it produces no
+> error. Both default to `false`; they exist for a local session on a corpus you
+> own. Provider error bodies are never echoed either, because an upstream error
+> can quote the entire prompt back.
+
+### What M5 does not add
+
+No metrics endpoint (`observability.metrics` is declared, `/metrics` is not
+wired), no cost or token accounting, no per-branch timing inside `retrieve` (the
+stopwatch is around the node, so dense and sparse report as one number), and
+nothing about behaviour under load. M5 makes one request legible; it does not
+make a fleet legible.
+
+Details: [ADR 0006](docs/adr/0006-observability.md) for the decision and its
+alternatives, [architecture](docs/architecture.md#observability-m5) for the
+signal flow and the `debug` contract, [runbook](docs/runbook.md#observability-m5)
+for debugging a slow query, enabling Langfuse, and the full `log_prompts`
+warning, [evaluation](docs/evaluation.md#ops-signals-are-not-eval-metrics) for
+why none of these numbers is a quality claim.
+
 ## License
 
 [MIT](LICENSE).

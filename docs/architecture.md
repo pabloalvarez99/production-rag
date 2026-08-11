@@ -1,6 +1,6 @@
 # Architecture
 
-Status: **M4 (grounded generation + `POST /v1/query`).** Last updated: 2026-08-10.
+Status: **M5 (observability).** Last updated: 2026-08-11.
 
 M0 shipped the walking skeleton: package, config, health and readiness probes,
 container stack. M1 added the offline ingest path — walk, chunk, embed (dense),
@@ -21,12 +21,22 @@ returns passages; M4 is the first milestone that returns prose, which is why the
 citation contract and the refusal edge are part of the design rather than a
 prompt detail.
 
+M5 adds no stage. It makes the stages that exist **legible**: per-node timings
+that were already on the graph state become the operator's first read, the
+caller-facing `debug` flag gets a defined and deliberately narrow contract, and
+tracing becomes an opt-in export that the system is complete without
+([ADR 0006](adr/0006-observability.md)). The rule that shapes all of it is that
+the observability layer is the most likely place in this system for corpus text
+to leak, because copying internal state elsewhere is its entire job — so prompts
+and passages are never a signal, at any level. See
+[Observability](#observability-m5).
+
 Ownership note: this document describes the contract the M4 query path
 implements. The library (`production_rag.generation`, the graph) is A1's; the
 HTTP surface is A3's; this file, the runbook, the data model and the ADRs are
 A2's.
 
-What M4 does **not** add: measured quality. There is still no faithfulness
+What M4 and M5 do **not** add: measured quality. There is still no faithfulness
 number, no citation-precision number and no Ragas harness — that is M6, and no
 number in this repository has been produced by one. Nor has any retrieval number
 here been measured against a semantically meaningful embedding: see
@@ -703,7 +713,9 @@ generation, one question was one Qdrant round trip; now one question fans out
 into an embedding call, two searches, a rerank provider call and an LLM call,
 each with its own latency and its own way of failing. Without one id on every
 line, "why was this answer bad" is a guess. Tracing proper — spans, a Langfuse
-or OTel backend — is M5; the id is the seam it will attach to.
+or OTel backend — is M5, opt-in and off by default; the id is the seam it
+attaches to. See [Observability](#observability-m5) and
+[ADR 0006](adr/0006-observability.md).
 
 ### No secret ever reaches a response or a log
 
@@ -811,11 +823,11 @@ only stage in the system that spends money per document, which is why the
 content hash and the incremental skip exist before the embed call rather than
 after it.
 
-## What is live in M4 vs declared-only
+## What is live in M5 vs declared-only
 
 `configs/default.yaml` is deliberately broader than what the code consumes.
 
-| Config block | State after M4 |
+| Config block | State after M5 |
 |---|---|
 | `ingest` (walk, chunking, embedding, incremental) | live |
 | `ingest.sparse` (BM25 k1/b, lowercase, stopwords) | **live** — vectors are written at ingest |
@@ -827,7 +839,11 @@ after it.
 | `generation.citations` (style, require_citation, refuse_without_evidence, refusal_message) | **live** — `[n]` markers are resolved and the refusal edge is taken from these keys |
 | `generation.prompt` (system_path, include_heading_path, max_chunks_in_prompt) | **live** — the system prompt is a file under `configs/prompts/`, not a string in code |
 | `evals` | thresholds declared; a source-level `hit@k` script exists, the Ragas harness does not — M6 |
-| `observability.tracing` | declared only — M5 |
+| `observability.logging` (level, format, `include_request_id`) | **live** — structured JSON logs with a request id on every line |
+| `observability.logging.log_prompts` / `log_retrieved_text` | **live as a guard**: both default `false` and nothing logs prompt or passage text. Local debugging only, never a deployment — see [ADR 0006](adr/0006-observability.md) |
+| `observability.tracing` (Langfuse, keys by env-var name, `sample_rate`) | **opt-in** — off by default, and the whole system runs offline without it; a trace failure never fails a request |
+| `observability.metrics` (`/metrics`, latency buckets) | declared only — the endpoint is not wired |
+| `observability.health` | live since M0 — liveness never checks a dependency, readiness does |
 
 A key existing in that file is not a claim that the runtime reads it.
 
@@ -884,6 +900,196 @@ correct in kind and merely ordered worse. A failed generator leaves nothing that
 can be substituted — every available fallback is an answer without grounding,
 which is the thing the milestone is built to refuse.
 
+## Observability (M5)
+
+Everything above describes what the system *does*. This section describes how
+anyone finds out what it did. The decision and its alternatives are in
+[ADR 0006](adr/0006-observability.md); the mechanics are here.
+
+The problem M5 answers is specific to what M4 built. Through M3 a question was
+one Qdrant round trip, so "it was slow" had one suspect. A question is now an
+embedding call, two searches, an optional rerank provider call, an LLM call and
+two guardrail checks — and the interesting failures in that path do not raise:
+an answer is thin because the context budget truncated, the reranker has been
+failing open for a week, the model is emitting markers that get stripped before
+anyone sees them. Those are numbers the system either records or does not.
+
+```
+   request ──▶ ┌────────────────────────────────────────────┐
+               │ RequestContextMiddleware                   │
+               │  X-Request-ID in (or a fresh UUID4)        │
+               │  bound into structlog contextvars          │
+               └───────────────────┬────────────────────────┘
+                                   │ every line below carries request_id
+                                   ▼
+               ┌────────────────────────────────────────────┐
+               │ query graph — one stopwatch per node       │
+               │  retrieve · rerank · guard · generate ·    │
+               │  cite · finalise                           │
+               │            ↓ writes                        │
+               │  QueryState.timings_ms{node: ms}           │
+               └───────────────────┬────────────────────────┘
+                                   │
+        ┌──────────────────────────┼───────────────────────────────┐
+        ▼                          ▼                               ▼
+ ┌───────────────┐   ┌──────────────────────────┐   ┌──────────────────────────┐
+ │ HTTP response │   │ library result           │   │ structured JSON logs     │
+ │ answer,       │   │ QueryResult.timings_ms   │   │ request_completed        │
+ │ citations,    │   │  → to_dict() latency_ms  │   │ query_completed          │
+ │ refused,      │   │ hits_used/hits_retrieved │   │ query_finalised          │
+ │ refusal_reason│   │ invalid_markers          │   │ context_truncated        │
+ │               │   │ uncited_claims           │   │ rerank_failed_open       │
+ │ + diagnostics │   │ rerank{applied,          │   │                          │
+ │   iff debug   │   │        candidates, error}│   │ never: prompts, passages │
+ └───────┬───────┘   └────────────┬─────────────┘   └────────────┬─────────────┘
+         │ X-Request-ID           │                              │
+         │ X-Response-Time-ms     │                              │
+         ▼                        ▼                              ▼
+     the caller            eval harness (M6)              log aggregator
+                                                                 │
+                                      opt-in, off by default ────┤
+                                                                 ▼
+                                                    Langfuse (traces)
+                                          enabled + 3 env vars, fail-open
+```
+
+Three sinks, three audiences, one join key. The response serves the caller, the
+library result serves a harness or a CLI, the logs serve an operator — and the
+request id is on all of them, which is what makes an incident a query rather than
+a guess.
+
+### Timings are always collected; the response is not always allowed to show them
+
+`timings_ms` is populated on **every** request, with no flag and no sampling. The
+cost is one `perf_counter()` pair per node, and the alternative is asking an
+operator to reproduce a slow request that already happened. Because the graph
+nodes are adapters around exactly one stage each ([ADR 0002](adr/0002-langgraph-query.md)),
+stage latency and node latency are the same number by construction; the node
+names are constants in `production_rag.graph.state`, so a rename cannot silently
+break a dashboard keyed on them.
+
+Where that dict is readable differs by surface, and the difference is a security
+boundary rather than an oversight:
+
+| Surface | Timings | Why |
+|---|---|---|
+| Library result (`run_query(...)`) | always — `timings_ms`, and `latency_ms` + `total_ms` via `to_dict()` | the caller is the process itself |
+| CLI (`python -m production_rag.query --debug`) | on request | already inside the trust boundary; the operator ran it |
+| `POST /v1/query` | only with `debug: true`, and only the safe subset | the caller is not necessarily trusted |
+| Logs | always, in `query_completed` | keyed by request id, behind whatever guards the aggregator has |
+
+The library and log columns are live as of M4 — `timings_ms` has been on the
+state object and in `query_completed` since the graph landed. What M5 defines is
+the **`debug` projection**: the request field has been accepted and validated
+since M4 but widened nothing, and the contract above is what the M5 query and
+API code implements against. A response with no `diagnostics` object under
+`debug: true` is a checkout that predates it, not a different contract.
+
+**`debug` is caller-controlled**, and that single fact defines its contract.
+Anyone who can reach the endpoint can set it, so it is not an authenticated
+diagnostic channel and may only widen the response to things that would be safe
+to publish:
+
+| Exposed under `debug: true` | Withheld regardless |
+|---|---|
+| per-node `timings_ms` and the total | prompt text, system prompt, rendered blocks |
+| `hits_retrieved` / `hits_used` | passage text beyond the citations already returned |
+| `rerank` summary — `applied`, `candidates`, `error` | collection name, embedder model, provider identity |
+| `invalid_markers` | credentials, in any form, at any level |
+
+The subset arrives as one optional `diagnostics` object rather than as fields
+spliced into the body, so the four stable response fields never change shape
+depending on a flag and a client that ignores diagnostics needs no conditional.
+
+`debug` answers *what the system did*, never *what the system knows*. The
+withheld column is not a to-do list: those fields stay on the library result and
+in the logs on purpose, because a public endpoint that reports its own collection
+name and embedding model is describing its interior to anyone who asks.
+
+### The three ops signals that need no judge
+
+Quality measurement is offline, sampled, and M6 ([evaluation](evaluation.md)).
+These three are none of those things — they are produced by the request path
+itself, on every request, for free, and they are what an operator watches:
+
+| Signal | Where | What a change in it means |
+|---|---|---|
+| `timings_ms` per node | library result, logs, `debug` response | which stage got slow. `generate` dominating is normal; `rerank` dominating is `input_top_k`; `retrieve` dominating points at Qdrant |
+| `invalid_markers` | library result, `query_finalised` log | the model is emitting citations that resolve to nothing. They are stripped from the answer, so without this field the misbehaviour is invisible |
+| `hits_used` vs `hits_retrieved` | library result | the context budget truncated the tail, so retrieval order was truncation order and the reranker decided what the model could cite |
+
+Two more are degradation reporters rather than steady signals: `rerank.error`
+with `rerank.applied: false` (the reranker failed open — one is noise, a steady
+stream is an ordering incident), and `refusal_reason` (`no_evidence` is a
+retrieval miss, the other three are the model).
+
+None of these is a quality metric. `invalid_markers` at zero says nothing about
+whether the markers that *did* resolve support their sentences — that needs a
+judge. The distinction is drawn in full in
+[evaluation](evaluation.md#ops-signals-are-not-eval-metrics).
+
+### Tracing is an export, never a dependency
+
+`observability.tracing` configures Langfuse, off by default, reading
+`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_HOST` **by name**.
+Three properties hold, and they are what makes it an export rather than an
+integration:
+
+- **Offline works.** Every command, the endpoint, the CLI, the tests and the eval
+  script run with nothing configured and no network to a trace backend. A laptop
+  with no credentials is this project's reference environment.
+- **A trace failure is not a request failure.** The exporter is fail-open in the
+  same sense as the reranker: backend down, slow or misconfigured, the request
+  still answers and the degradation is logged. Losing a diagnostic is not losing
+  the product.
+- **No vendor inside the library.** Tracing attaches at the pipeline boundary —
+  the seam the request id already occupies — not inside
+  `production_rag.retrieval` or `production_rag.generation`. A vendor client
+  called from a retrieval function makes that function untestable without the
+  vendor.
+
+What it costs when it is on: a generation trace *is* the prompt and the answer,
+sent to a third party. `sample_rate` bounds volume, not sensitivity. Turning it
+on is a decision about where corpus text may go, not a toggle.
+
+### Logs: what is recorded, and the one field that is user data
+
+Structured JSON via structlog, `request_id` bound once in the middleware and
+therefore present on every line the request emits. The events worth knowing:
+
+| Event | Emitted by | Carries |
+|---|---|---|
+| `request_completed` | middleware | method, path, status, `duration_ms` — server-side handling time, also returned as `X-Response-Time-ms` |
+| `request_failed` | middleware | the same, plus the traceback; the exception is re-raised, never swallowed |
+| `query_completed` | pipeline | mode, hit count, citation count, `refused`, `refusal_reason`, model, `timings_ms` — **and the question text** |
+| `query_finalised` | finalise node | `refused`, `refusal_reason`, citation count, `uncited_claims`, `invalid_markers` |
+| `context_truncated` | generation | kept and dropped chunk counts |
+| `rerank_failed_open` | rerank stage | provider and error — a degradation that would otherwise be silent |
+
+`query_completed` logging the **question** is a deliberate exception to "text is
+not a signal", and it is called out because it is one. The question is
+user-supplied rather than corpus content, and it is what makes a report
+correlatable at all; a deployment handling sensitive questions should treat that
+line as personal data and drop the field at the aggregator. What is *never*
+logged is the prompt, the retrieved passages, provider error bodies, and
+credentials in any form — see
+[No secret ever reaches a response or a log](#no-secret-ever-reaches-a-response-or-a-log)
+and the standing warning on `log_prompts` in the [runbook](runbook.md#never-turn-on-log_prompts-in-a-deployment).
+
+### What M5 does not add
+
+- **No metrics endpoint.** `observability.metrics` describes a Prometheus
+  exposition on `/metrics` with buckets shaped for a RAG request; it is not
+  wired. The config keys record the intended shape, and the file says so.
+- **No cost or token accounting.** The provider returns token counts on the
+  generation call; nothing aggregates them and the result does not carry them.
+  Latency is not spend.
+- **No per-branch timing inside `retrieve`.** The stopwatch is around the node,
+  so the dense and sparse branches report as one number. Attributing a slow
+  retrieve to a branch still means running the retrieve command per mode.
+- **No behaviour under load.** Per-request timings say nothing about concurrency;
+  load testing waits for a real deployment target.
+
 ## Deployment shape
 
 Local development is the only target through M4 and it is `docker compose up -d
@@ -904,7 +1110,7 @@ And a request without authentication can now spend money per call, which is the
 reason rate limiting moves from "nice to have" to M7's headline: an unprotected
 `POST /v1/query` on a public address is a billing incident waiting for a crawler.
 
-## Non-goals (M4)
+## Non-goals (M4 + M5)
 
 - No measured **answer** quality. Faithfulness, citation precision and refusal
   accuracy all need an LLM judge over a real golden set — M6. The citation
@@ -921,4 +1127,6 @@ reason rate limiting moves from "nice to have" to M7's headline: an unprotected
 - No authentication/authorization on the API — and it now guards a paid path.
 - No horizontal scaling, no API gateway.
 - No GPU in the runtime path. The `local` cross-encoder is CPU-only by design.
-- Full observability stack is config-shaped but not wired.
+- No metrics endpoint, no cost accounting, no load-tested latency. M5 makes one
+  request legible; it does not make a fleet legible. See
+  [what M5 does not add](#what-m5-does-not-add).

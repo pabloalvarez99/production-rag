@@ -4,7 +4,7 @@
 # key existing here is not a promise that the runtime reads it yet. Each block
 # below carries a `status:` comment; docs/architecture.md holds the same table.
 #
-# Status after M4 (grounded generation + POST /v1/query):
+# Status after M5 (observability):
 #   ingest            LIVE
 #   ingest.sparse     LIVE   BM25 vectors are written at ingest time
 #   qdrant            LIVE   (dense + sparse vectors, payload indexes, consistency)
@@ -17,11 +17,17 @@
 #                            the `fake` provider exercises the contract offline,
 #                            `openai` is the one that produces a real answer
 #   evals             M6     thresholds declared; only a hit@k script exists
-#   observability     M5     (logging block is live)
+#   observability.logging  LIVE   structured logs, request id on every line
+#   observability.tracing  LIVE   opt-in export; off by default, offline works
+#   observability.metrics  DECLARED  nothing serves /metrics
 #
 # The whole path runs: ingest, hybrid retrieval, rerank, generation with
-# citations. What is NOT here is measured quality — no faithfulness number, no
-# citation-precision number, no Ragas harness. That is M6. See docs/evaluation.md.
+# citations — and, from M5, reports per-node timings on every request. What is
+# NOT here is measured quality — no faithfulness number, no citation-precision
+# number, no Ragas harness. That is M6. See docs/evaluation.md.
+#
+# Timings, invalid_markers and hits_used are OPS signals, not eval metrics: they
+# say what the system did, never whether the answer was right.
 #
 # Precedence (lowest to highest):
 #   1. this file
@@ -405,33 +411,88 @@ evals:
   seed: 42
 
 # ---------------------------------------------------------------------------
-# Observability — structured logs now, traces when Langfuse is configured.
-# status: the logging block is LIVE; tracing and metrics land in M5.
+# Observability — structured logs and per-node timings, always; traces on
+# request.  status: LIVE (M5) for logging and tracing; metrics still declared.
+# Rationale: docs/adr/0006-observability.md.
+#
+# What is NOT configurable here, on purpose: per-node timings. Every graph node
+# is timed on every request, with no flag and no sampling, because the cost is
+# one perf_counter pair per stage and a breakdown that exists only when someone
+# remembered to enable it is missing exactly when it is needed. The numbers land
+# on the library result (`timings_ms`, rendered as `latency_ms`), in the
+# `query_completed` log line, and — only with `debug: true` — in a `diagnostics`
+# object on the HTTP response.
+#
+# `debug` is CALLER-controlled, so it exposes only what would be safe to
+# publish: timings, hit counts, the rerank summary, invalid_markers. Never the
+# collection name, the embedder, the model, or any prompt or passage text.
+#
+# Fourth instance of the honest-scope pattern in this file: the signals are real
+# everywhere, but numbers produced by the `fake` providers measure the plumbing.
+# A `--llm fake` run has no provider call in `generate` at all.
 # ---------------------------------------------------------------------------
 observability:
   logging:
+    # status: LIVE. structlog, one request id bound in the middleware and
+    # therefore on every line the request emits — the join key between the
+    # access log, the retrieval calls, the rerank warning and the LLM call.
     level: INFO # overridden by LOG_LEVEL
     format: json # json in containers, console for local TTY debugging
-    # Never log prompt or document text at INFO: it is the easiest way to leak
-    # customer data into a log aggregator.
+    # Never log prompt or document text. This is the cheapest data leak this
+    # system offers and it produces no error: the prompt carries retrieved
+    # corpus text VERBATIM, so an aggregator with these on becomes a full copy
+    # of the corpus with none of its access controls, readable by everyone with
+    # a dashboard login and retained for months.
+    #
+    # Local debugging session on a corpus you own, on a machine whose logs go
+    # nowhere. Never a deployment. Treat any archive written while they were on
+    # as a copy of the corpus.
     log_prompts: false
     log_retrieved_text: false
+    # Note one deliberate exception, called out because it is one: the QUESTION
+    # text is logged in `query_completed`. It is user-supplied rather than
+    # corpus content and it is what makes a report correlatable — but a
+    # deployment handling sensitive questions should drop that field at the
+    # aggregator rather than losing the event.
     include_request_id: true
 
   tracing:
+    # status: LIVE (M5) as an OPT-IN EXPORT — off by default, and the whole
+    # system is complete without it. Every command, the endpoint, the CLI, the
+    # tests and the eval script run offline with nothing here configured; a
+    # laptop with no credentials is this project's reference environment.
+    #
+    # Fail-open, in the same sense as rerank.fail_open: a trace backend that is
+    # down, slow or misconfigured loses a diagnostic, never a request. If traces
+    # stop appearing, check the logs before assuming requests are failing.
+    #
+    # Enabling this sends PROMPTS AND ANSWERS to a third party — that is what a
+    # generation trace is, and `sample_rate` bounds volume, not sensitivity. It
+    # is a decision about where corpus text may go, not a toggle. Self-hosting
+    # changes nothing except `host_env`.
     enabled: false
     provider: langfuse
+    # Env var *names*, never values. Tracing stays off unless all three resolve;
+    # a partial configuration does not half-enable it.
     public_key_env: LANGFUSE_PUBLIC_KEY
     secret_key_env: LANGFUSE_SECRET_KEY
     host_env: LANGFUSE_HOST
     sample_rate: 1.0
 
   metrics:
+    # status: DECLARED ONLY. Nothing serves /metrics yet — `enabled: true` here
+    # records the intended shape, not a live endpoint. Kept because the bucket
+    # choice is the part worth deciding once: retrieval is tens of ms and
+    # generation is seconds, so a default linear histogram would put every real
+    # request in one bucket.
+    #
+    # Per-request latency is live and is a different question from fleet
+    # latency; this block is the latter, and so is anything about behaviour
+    # under concurrency. Cost and token accounting are not here either — the
+    # provider reports token counts and nothing aggregates them yet.
     enabled: true
     # Prometheus-compatible exposition on the API itself.
     path: /metrics
-    # Buckets tuned for a RAG request: retrieval is tens of ms, generation is
-    # seconds, so a default linear histogram would be useless.
     latency_buckets_seconds: [0.1, 0.25, 0.5, 1, 2, 5, 10, 30]
 
   health:
