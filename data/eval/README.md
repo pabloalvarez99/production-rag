@@ -11,6 +11,31 @@ is split in two tiers.
 One JSON object per line. JSONL rather than a single JSON array so a malformed
 entry breaks one line instead of the whole file, and diffs stay readable.
 
+Use `golden.jsonl` with the nine-document `data/raw/sample/` corpus for fast,
+offline CI and plumbing checks. Its 17 seed items pin the schema and exercise
+the evaluator; they are not a retrieval-quality benchmark.
+
+## `golden-corpus.jsonl`
+
+Use `golden-corpus.jsonl` with an ingest rooted at `data/corpus/`. It contains
+60 source-labelled items over the vendored Qdrant documentation, exactly ten in
+each adversarial category: `lexical_only`, `paraphrase_only`, `multi_source`,
+`distractor`, `near_miss_unanswerable`, and `deep_rank`.
+
+The larger corpus exists to make source-level `hit@5` discriminating. With nine
+sources, five random distinct results hit a labelled source about 56% of the
+time; with 3,067 source documents the same random coverage is about 0.16%.
+Always pair the golden file with its intended ingest root because source-path
+matching is exact:
+
+| Golden file | Ingest root | Purpose |
+|---|---|---|
+| `golden.jsonl` | `data/raw/` | deterministic CI fixture and smoke test |
+| `golden-corpus.jsonl` | `data/corpus/` | retrieval measurement and slice analysis |
+
+The corpus golden set does not imply a quality result by itself. No paid
+embedding or hosted judge baseline was run when it was authored.
+
 The file is committed and currently holds the **seed set**: 17 items labelled at
 *document* granularity. The chunk-level schema below is the target, not what is
 in the file today — see [seed schema](#seed-schema-current) first.

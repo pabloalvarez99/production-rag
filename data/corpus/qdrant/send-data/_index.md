@@ -1,0 +1,20 @@
+---
+title: Send Data to Qdrant
+short_description: "Load data into Qdrant from streaming, batch, and orchestration sources including Kafka, Databricks, and Apache Airflow."
+description: "Send data to Qdrant from streaming and batch sources including Kafka, Databricks, and Apache Airflow for real-time and scheduled ingestion pipelines."
+weight: 1050
+partition: ecosystem
+hideInSidebar: true
+---
+
+## How to Send Your Data to a Qdrant Cluster
+
+The following examples show you some of the many ways you can send data to a Qdrant cluster from different sources.
+
+If you want to migrate data from another Qdrant instance or vector database like Pinecone, Weaviate or Milvus see our [Migration Guide](/documentation/tutorials-operations/migration/) for more information.
+
+| Example                                                                   | Description                                                       | Stack                                       |   
+|---------------------------------------------------------------------------------|-------------------------------------------------------------------|---------------------------------------------|
+| [Stream Data to Qdrant with Kafka](/documentation/send-data/data-streaming-kafka-qdrant/)                                                                                                                          | Use Confluent to Stream Data to Qdrant via Managed Kafka.                                                 |  Qdrant, Kafka  |
+| [Qdrant on Databricks](/documentation/send-data/databricks/)                                                                     | Learn how to use Qdrant on Databricks using the Spark connector     | Qdrant, Databricks, Apache Spark |
+| [Qdrant with Airflow and Astronomer](/documentation/send-data/qdrant-airflow-astronomer/)                                        | Build a semantic querying system using Airflow and Astronomer       | Qdrant, Airflow, Astronomer      |

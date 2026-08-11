@@ -1,0 +1,21 @@
+```rust
+use qdrant_client::{
+    Payload, Qdrant,
+    qdrant::{Document, PointStruct, UpsertPointsBuilder},
+};
+use std::collections::HashMap;
+
+client
+    .with_header("openrouter-api-key", "<YOUR_OPENROUTER_API_KEY>")
+    .upsert_points(UpsertPointsBuilder::new("{collection_name}",
+        vec![
+            PointStruct::new(1,
+                Document {
+                  text: "Recipe for baking chocolate chip cookies".into(),
+                  model: "openrouter/mistralai/mistral-embed-2312".into(),
+                  options: HashMap::new(),
+                  },
+                Payload::default())
+            ]).wait(true))
+        .await?;
+```

@@ -1,0 +1,35 @@
+---
+title: Embeddings
+short_description: "Connect Qdrant to text, image, and multimodal embedding providers including OpenAI, Cohere, Jina, Mistral, AWS Bedrock, Voyage, and many more."
+description: "Browse Qdrant integrations with embedding providers and models for dense, sparse, and multimodal vectors, including OpenAI, Cohere, Jina, Mistral, and Bedrock."
+weight: 700
+partition: ecosystem
+---
+
+# Supported Embedding Providers & Models
+
+Qdrant supports all available text and multimodal dense vector embedding models as well as vector embedding services without any limitations.
+
+## Code samples
+
+| Embeddings Providers                                  | Description                                                      |
+| ----------------------------------------------------- | ---------------------------------------------------------------- |
+| [Aleph Alpha](/documentation/embeddings/aleph-alpha/) | Multilingual embeddings focused on European languages.           |
+| [Bedrock](/documentation/embeddings/bedrock/)         | AWS managed service for foundation models and embeddings.        |
+| [Cohere](/documentation/embeddings/cohere/)           | Language model embeddings for NLP tasks.                         |
+| [Fusion Embedding 2](/documentation/embeddings/fusion-embedding-2/) | Open-weight multimodal embeddings across text, image, video, and audio. |
+| [Gemini](/documentation/embeddings/gemini/)           | Google Gemini embeddings for semantic search, classification.    |
+| [Jina AI](/documentation/embeddings/jina-embeddings/) | Customizable embeddings for neural search.                       |
+| [Mistral](/documentation/embeddings/mistral/)         | Open-source, efficient language model embeddings.                |
+| [MixedBread](/documentation/embeddings/mixedbread/)   | Lightweight embeddings for constrained environments.             |
+| [Mixpeek](/documentation/embeddings/mixpeek/)         | Managed SDK for video chunking, embedding, and post-processing. ​ |
+| [Nomic](/documentation/embeddings/nomic/)             | Embeddings for data visualization.                               |
+| [Nvidia](/documentation/embeddings/nvidia/)           | GPU-optimized embeddings from Nvidia.                            |
+| [Ollama](/documentation/embeddings/ollama/)           | Embeddings for conversational AI.                                |
+| [OpenAI](/documentation/embeddings/openai/)           | Industry-leading embeddings for NLP.                             |
+| [Prem AI](/documentation/embeddings/premai/)          | Precise language embeddings.                                     |
+| [Twelve Labs](/documentation/embeddings/twelvelabs/)  | Multimodal embeddings from Twelve labs.                          |
+| [Snowflake](/documentation/embeddings/snowflake/)     | Scalable embeddings for big data.                                |
+| [Superlinked](/documentation/embeddings/superlinked/) | Self-hosted inference engine serving 85+ dense, sparse, and multivector (ColBERT) embedding models from a single endpoint. |
+| [Upstage](/documentation/embeddings/upstage/)         | Embeddings for speech and language tasks.                        |
+| [Voyage AI](/documentation/embeddings/voyage/)        | Navigation and spatial understanding embeddings.                 |

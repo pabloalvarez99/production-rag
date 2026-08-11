@@ -1,0 +1,34 @@
+```rust
+use std::collections::HashMap;
+
+use qdrant_client::Qdrant;
+use qdrant_client::qdrant::{value::Kind, DocumentBuilder, Query, QueryPointsBuilder, Struct, Value};
+
+let mut options = HashMap::new();
+options.insert("stemmer".to_string(), Value::from(vec![("type", "none")]));
+options.insert(
+    "stopwords".to_string(),
+    Value {
+        kind: Some(Kind::StructValue(Struct {
+            fields: HashMap::new(),
+        })),
+    },
+);
+options.insert("tokenizer".to_string(), Value::from("multilingual"));
+options.insert("ascii_folding".to_string(), Value::from(true));
+
+client
+    .query(
+        QueryPointsBuilder::new("books")
+            .query(Query::new_nearest(
+                DocumentBuilder::new("Mieville", "qdrant/bm25")
+                    .options(options)
+                    .build(),
+            ))
+            .using("author-bm25")
+            .limit(10)
+            .with_payload(true)
+            .build(),
+    )
+    .await?;
+```

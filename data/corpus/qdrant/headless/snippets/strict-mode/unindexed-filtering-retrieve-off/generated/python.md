@@ -1,0 +1,9 @@
+```python
+client.update_collection(
+    collection_name="{collection_name}",
+    strict_mode_config=models.StrictModeConfig(
+        enabled=True,
+        unindexed_filtering_retrieve=True,
+    ),
+)
+```

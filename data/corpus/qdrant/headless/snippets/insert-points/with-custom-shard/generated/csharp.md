@@ -1,0 +1,13 @@
+```csharp
+using Qdrant.Client;
+using Qdrant.Client.Grpc;
+
+await client.UpsertAsync(
+	collectionName: "{collection_name}",
+	points: new List<PointStruct>
+	{
+		new() { Id = 111, Vectors = new[] { 0.1f, 0.2f, 0.3f } }
+	},
+	shardKeySelector: new ShardKeySelector { ShardKeys = { new List<ShardKey> { "user_1" } } }
+);
+```
