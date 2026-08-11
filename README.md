@@ -8,7 +8,11 @@ A production-shaped Retrieval-Augmented Generation service with hybrid Qdrant re
 
 ## Demo
 
-> **Wave 8 placeholder.** A GIF will show ingest, query, citations, refusal, and the evaluation report. No demo artifact is claimed before it exists.
+Reserved recording target: `docs/assets/production-rag-demo.gif`
+
+*The recording shows one grounded answer with citations, followed by a deliberate refusal.*
+
+Exact recording steps: [demo runbook](docs/demo.md). No image is embedded until that file exists.
 
 ## Scorecard
 
