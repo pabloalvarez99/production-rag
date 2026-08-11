@@ -8,16 +8,17 @@ COMPOSE ?= docker compose
 API     ?= api
 BASE_URL ?= http://localhost:8000
 
-# Ingest knobs. SOURCE is the corpus *root*: payload `source_path` values are
-# relative to it, and its first path segment becomes the filterable `source`
-# field. Keeping it at data/raw is what makes a chunk of the sample corpus read
-# as `sample/08-bm25-vs-dense.md` — which is exactly what data/eval/golden.jsonl
-# labels. Point it deeper and those labels stop matching.
+# Ingest knobs. SOURCE names the committed corpus; INGEST_ROOT is its parent so
+# payload paths retain the corpus namespace (`sample/00-intro.md`) expected by
+# the golden set instead of collapsing to `00-intro.md`.
 #   make ingest-fake SOURCE=data/raw/my-corpus
-SOURCE      ?= data/raw
+SOURCE      ?= data/raw/sample
+INGEST_ROOT ?= $(SOURCE)/..
 CONFIG_FILE ?= configs/default.yaml
 INGEST      := python -m production_rag.ingest --config $(CONFIG_FILE)
-RETRIEVE    := python -m production_rag.retrieval --config $(CONFIG_FILE)
+RETRIEVE    := python -m production_rag.retrieve --config $(CONFIG_FILE)
+EVAL_HIT    := python -m production_rag.evals.source_hit --config $(CONFIG_FILE)
+ABLATION    := python -m production_rag.evals.ablation --config $(CONFIG_FILE)
 
 # Retrieval knobs (M2). QUERY has no sensible default: retrieve-fake without one
 # would silently score a question nobody asked.
@@ -28,6 +29,7 @@ TOPK  ?=
 .DEFAULT_GOAL := help
 .PHONY: help build up down restart logs ps health health-ready ingest-fake ingest-sample \
         ingest-dry reingest-fake retrieve-fake retrieve-sample eval-hit-fake eval-hit-sample \
+        eval-ablation-fake \
         test test-host shell-api shell-qdrant clean
 
 help: ## Show this help
@@ -72,16 +74,16 @@ health-ready: health ## Also probe versioned readiness (needs Qdrant reachable)
 # full walk -> chunk -> embed -> upsert path runnable in CI. The vectors say
 # nothing about relevance, so never read retrieval numbers off this target.
 ingest-fake: ## Ingest the corpus at $(SOURCE) with the deterministic fake embedder (no API key)
-	$(COMPOSE) run --rm $(API) $(INGEST) --source $(SOURCE) --embedder fake
+	$(COMPOSE) run --rm $(API) $(INGEST) --source $(INGEST_ROOT) --embedder fake
 
 # Real embeddings. OPENAI_API_KEY comes from the environment or the gitignored
 # .env that Compose loads — never from the command line, where it would land in
 # shell history and in `docker inspect`.
 ingest-sample: ## Ingest $(SOURCE) with the real provider embedder (needs OPENAI_API_KEY)
-	$(COMPOSE) run --rm $(API) $(INGEST) --source $(SOURCE) --embedder openai
+	$(COMPOSE) run --rm $(API) $(INGEST) --source $(INGEST_ROOT) --embedder openai
 
 ingest-dry: ## Walk and chunk $(SOURCE), report counts, write nothing
-	$(COMPOSE) run --rm $(API) $(INGEST) --source $(SOURCE) --embedder fake --dry-run
+	$(COMPOSE) run --rm $(API) $(INGEST) --source $(INGEST_ROOT) --embedder fake --dry-run
 
 # M2 migration. A collection created by M1 carries only the `dense` named
 # vector -- M1 never declared `sparse`, despite what earlier docs claimed -- so
@@ -90,7 +92,7 @@ ingest-dry: ## Walk and chunk $(SOURCE), report counts, write nothing
 # is a full billed re-embed of every chunk, which is why there is no
 # reingest-sample target: run `ingest-sample` with --recreate deliberately.
 reingest-fake: ## DESTRUCTIVE. Drop the collection and re-ingest with sparse vectors (M2)
-	$(COMPOSE) run --rm $(API) $(INGEST) --source $(SOURCE) --embedder fake --recreate-collection
+	$(COMPOSE) run --rm $(API) $(INGEST) --source $(INGEST_ROOT) --embedder fake --recreate-collection
 
 # ---------------------------------------------------------------------------
 # Retrieve (M2). Dense + sparse branches, fused with RRF, printed as ranked
@@ -114,17 +116,17 @@ retrieve-sample: ## Same, with real embeddings (needs OPENAI_API_KEY). QUERY="..
 # ---------------------------------------------------------------------------
 # Evaluate (M2). Source-level hit@k over data/eval/golden.jsonl. Reports only:
 # no thresholds, no gate, no non-zero exit on a low score -- gating a 14-item
-# set would be theatre, and the harness is M6. scripts/ is excluded from the
-# image (.dockerignore), hence the mount.
+# set would be theatre, and the harness is M6.
 # ---------------------------------------------------------------------------
 
 eval-hit-fake: ## Score hit@k on a fake-embedded collection (plumbing, not quality)
-	$(COMPOSE) run --rm -v "$(CURDIR)/scripts:/app/scripts:ro" \
-		$(API) python scripts/eval_hit.py --config $(CONFIG_FILE) --embedder fake
+	$(COMPOSE) run --rm $(API) $(EVAL_HIT) --embedder fake
 
 eval-hit-sample: ## Score hit@k with real embeddings (needs OPENAI_API_KEY; costs money)
-	$(COMPOSE) run --rm -v "$(CURDIR)/scripts:/app/scripts:ro" \
-		$(API) python scripts/eval_hit.py --config $(CONFIG_FILE) --embedder openai
+	$(COMPOSE) run --rm $(API) $(EVAL_HIT) --embedder openai
+
+eval-ablation-fake: ## Compare dense/sparse/hybrid/hybrid+rerank(fake) offline
+	$(COMPOSE) run --rm $(API) $(ABLATION) --embedder fake
 
 # tests/ is excluded from the image (see .dockerignore) so it is mounted here.
 # Requires the dev extra to be part of the installed dependency set; if pytest

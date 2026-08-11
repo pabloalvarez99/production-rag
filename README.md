@@ -210,8 +210,8 @@ A few decisions worth stating, because they are the ones that get undone by acci
 | --- | --- | --- |
 | **M0** | Scaffold: package, config, health/readiness, tests, container stack | ✅ done |
 | **M1** | Ingest with LlamaIndex; chunking; dense embeddings; Qdrant collection and upsert | ⏳ next |
-| **M2** | Hybrid retrieval: sparse/BM25 vectors alongside dense, fused with RRF | 📋 planned |
-| **M3** | Cross-encoder reranking (`bge-reranker-base`), Cohere as an optional swap | 📋 planned |
+| **M2** | Hybrid retrieval: sparse/BM25 vectors alongside dense, fused with RRF | ✅ done |
+| **M3** | Cross-encoder reranking (`bge-reranker-base`), Cohere as an optional swap | ✅ done |
 | **M4** | Generation with citations; `POST /v1/query` orchestrated as a LangGraph graph | 📋 planned |
 | **M5** | Observability: OpenTelemetry traces, structured logs, token and latency metrics, optional Langfuse | 📋 planned |
 | **M6** | Evaluation: Ragas metrics, a golden set, and a regression gate in CI | 📋 planned |
