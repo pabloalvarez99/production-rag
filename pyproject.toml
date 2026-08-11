@@ -109,6 +109,7 @@ include = ["src", "tests", "README.md", "LICENSE", "pyproject.toml"]
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-ra --strict-markers --strict-config"
 # strict mode: an async test without an explicit marker is a mistake, not a
 # silently skipped test.

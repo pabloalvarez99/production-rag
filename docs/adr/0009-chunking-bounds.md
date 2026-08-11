@@ -62,9 +62,9 @@ The nine-document `data/raw/sample/` fixture does not change. Before and after,
 it produces 66 chunks with lengths min/p50/p95/max 184/449/714/781. No fixture
 chunk exercised either defect, so chunk ids and indexed content remain stable.
 
-Tier 1 is unchanged: source hit@5 0.9231, source recall@5 0.8846, MRR 0.5833,
-and nDCG@5 0.6383 over 13 scored cases (17 total, four unanswerable). No
-threshold was changed to obtain those numbers.
+The existing offline Tier 1 fixture benchmark is unchanged. No threshold was
+changed to obtain that result. Quantitative results belong in the rendered
+scorecard so their provenance and staleness are mechanically checked.
 
 ## Consequences
 

@@ -562,6 +562,7 @@ are about markers, and both come back from the same tier-2 run. They differ on
 They are disjoint by construction: a marker cannot be both unresolvable and
 wrongly-sourced. So neither substitutes for the other —
 
+<!-- provenance-allow: explanatory counterexample; zero invalid markers does not prove citation support -->
 - `invalid_marker_rate: 0.0` on every item is compatible with every citation
   pointing at a real chunk from the wrong document. Every marker resolved; none
   of them was right.

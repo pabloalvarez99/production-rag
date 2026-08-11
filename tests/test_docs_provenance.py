@@ -35,9 +35,7 @@ METRIC_NUMBER = re.compile(
     rf"(?:{KNOWN_METRICS}).{{0,100}}\b0\.\d+|\b0\.\d+.{{0,100}}(?:{KNOWN_METRICS})",
     re.IGNORECASE,
 )
-# Genuine explanatory example: this line explains why zero invalid markers does
-# not prove that otherwise valid citations support their surrounding claims.
-METRIC_NUMBER_ALLOWLIST = {("docs/evaluation.md", 565)}
+PROVENANCE_ALLOW = re.compile(r"^\s*<!-- provenance-allow:\s*(.*?)\s*-->\s*$")
 
 
 def _scorecard() -> dict[str, Any]:
@@ -52,6 +50,22 @@ def _without_rendered_regions(text: str) -> str:
         _, after = remainder.split(END, 1)
         text = before + after
     return text
+
+
+def _metric_number_violations(relative: str, text: str) -> list[tuple[str, int, str]]:
+    violations: list[tuple[str, int, str]] = []
+    exempt_next = False
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        marker = PROVENANCE_ALLOW.match(line)
+        if marker:
+            if not marker.group(1).strip():
+                violations.append((relative, line_number, "provenance allow marker needs a reason"))
+            exempt_next = True
+            continue
+        if METRIC_NUMBER.search(line) and not exempt_next:
+            violations.append((relative, line_number, line.strip()))
+        exempt_next = False
+    return violations
 
 
 def test_every_repository_scorecard_token_resolves() -> None:
@@ -99,8 +113,12 @@ def test_metric_shaped_numbers_only_exist_in_rendered_regions() -> None:
     for path in [README, *ROOT.joinpath("docs").rglob("*.md")]:
         relative = path.relative_to(ROOT).as_posix()
         text = _without_rendered_regions(path.read_text(encoding="utf-8"))
-        for line_number, line in enumerate(text.splitlines(), start=1):
-            allowlisted = (relative, line_number) in METRIC_NUMBER_ALLOWLIST
-            if METRIC_NUMBER.search(line) and not allowlisted:
-                violations.append((relative, line_number, line.strip()))
+        violations.extend(_metric_number_violations(relative, text))
     assert violations == []
+
+
+def test_provenance_allow_marker_requires_a_reason() -> None:
+    text = "<!-- provenance-allow: -->\nhit_at_5 0.5"
+    assert _metric_number_violations("example.md", text) == [
+        ("example.md", 1, "provenance allow marker needs a reason")
+    ]
