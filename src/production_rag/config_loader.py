@@ -271,18 +271,69 @@ class RerankConfig(_Section):
     local_model: str = "BAAI/bge-reranker-base"
 
 
+class CitationsConfig(_Section):
+    """How an answer is required to point at its evidence (M4).
+
+    ``require_citation`` and ``refuse_without_evidence`` are the two settings
+    that decide whether this is a grounded RAG system or a chatbot with a
+    retrieval step in front of it. Both default to on: an uncited answer and a
+    guessed answer are the two failure modes a user cannot detect by reading.
+    """
+
+    enabled: bool = True
+    style: str = "bracketed_index"
+    require_citation: bool = True
+    refuse_without_evidence: bool = True
+    refusal_message: str = "I could not find support for that in the indexed documents."
+
+
+class PromptConfig(_Section):
+    """Prompt assembly knobs (M4).
+
+    ``max_chunks_in_prompt`` is a separate ceiling from ``retrieval.top_k``:
+    retrieval decides what is worth looking at, the prompt decides what fits.
+    Truncation is from the tail, so retrieval order is also truncation order.
+    """
+
+    system_path: str = "configs/prompts/system.md"
+    include_heading_path: bool = True
+    max_chunks_in_prompt: int = Field(default=8, gt=0)
+
+
+class GenerationConfig(_Section):
+    """Answer synthesis (M4).
+
+    ``temperature`` is near zero on purpose: this stage extracts and attributes
+    what retrieval found, it does not author. A creative setting here shows up
+    as citations that point at passages which do not say what the answer claims.
+    """
+
+    provider: str = "openai"
+    model: str = "gpt-4o-mini"
+    api_key_env: str = "OPENAI_API_KEY"
+    temperature: float = Field(default=0.1, ge=0.0, le=2.0)
+    max_output_tokens: int = Field(default=800, gt=0)
+    max_context_tokens: int = Field(default=6000, gt=0)
+    timeout_seconds: float = Field(default=60.0, gt=0)
+    max_retries: int = Field(default=3, ge=0)
+    stream: bool = True
+    citations: CitationsConfig = CitationsConfig()
+    prompt: PromptConfig = PromptConfig()
+
+
 class YamlConfig(_Section):
     """The whole file, with only the blocks the code consumes typed out.
 
-    Blocks belonging to later milestones (``generation``, ``evals``,
-    ``observability``) are intentionally absent and ignored rather than modelled,
-    so this class describes what the runtime actually reads.
+    Blocks belonging to later milestones (``evals``, ``observability``) are
+    intentionally absent and ignored rather than modelled, so this class
+    describes what the runtime actually reads.
     """
 
     ingest: IngestConfig = IngestConfig()
     qdrant: QdrantConfig = QdrantConfig()
     retrieval: RetrievalConfig = RetrievalConfig()
     rerank: RerankConfig = RerankConfig()
+    generation: GenerationConfig = GenerationConfig()
 
 
 def load_yaml_config(path: str | Path | None = None) -> YamlConfig:
