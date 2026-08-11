@@ -181,3 +181,9 @@ class TestPromptOverride:
         llm = ScriptedLLM("Grounded [1].")
         generate_answer("q", HITS, llm=llm, system_prompt="be terse")
         assert llm.prompts[0][0].content == "be terse"
+
+
+def test_generation_does_not_claim_unimplemented_streaming_by_default() -> None:
+    # The default moved when the config's declared surface was audited against
+    # the synchronous, whole-answer query path that actually exists.
+    assert GenerationConfig().stream is False

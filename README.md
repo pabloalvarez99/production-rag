@@ -20,22 +20,14 @@ This service is the other thing — the shape a RAG system takes when it has to 
 | Retrieval | **Hybrid**: dense vectors *and* sparse/BM25 in one Qdrant query, fused with reciprocal rank fusion. Exact identifiers stop being invisible. |
 | Precision | A **cross-encoder reranker** (`bge-reranker-base`) reorders the fused candidates before anything reaches the LLM. Retrieval recall and answer precision are separate problems. |
 | Trust | Every answer returns **citations** to the chunks that produced it. An answer without a source is not an answer. |
-| Change safety | **Ragas** plus a golden set, run as a regression gate. "It feels better" is not a result. |
+| Change safety | A **two-tier offline evaluation harness**: deterministic, free retrieval checks in tier 1; an offline default judge in tier 2; and a gate armed explicitly with `--fail-under-hit`. "It feels better" is not a result. |
 | Operability | Config from the environment, structured logs with a correlation id per request, liveness and readiness probes, containerised from day one. |
 
-The stack is locked so each milestone is an implementation task rather than an architecture debate: **LlamaIndex** (ingest and node parsing), **LangGraph** (the query graph, from M4), **Qdrant** (dense + sparse vectors, payload filters), **bge-reranker-base** (local reranking, with Cohere as an optional swap), **FastAPI** + **Pydantic v2** (HTTP surface), **Ragas** (evaluation), **structlog** + OpenTelemetry (observability).
+The stack is locked so each milestone is an implementation task rather than an architecture debate: hand-rolled chunking preserves heading-path prefixes, a minimum-chunk floor and structural separators that a framework would hide; **LangGraph** runs the query graph; **Qdrant** stores dense + sparse vectors and payload filters; **bge-reranker-base** provides local reranking, with Cohere as an optional swap; **FastAPI** + **Pydantic v2** expose HTTP; and **structlog** + OpenTelemetry provide observability seams.
 
-## Current status — M0 (scaffold)
+## Current status — M6 evaluation harness
 
-M0 is the walking skeleton, and nothing more. What exists today:
-
-- An installable, typed Python package (`src/` layout, `production_rag`).
-- Environment-driven configuration with validation and secret masking.
-- `GET /health`, `GET /v1/health`, `GET /v1/ready`, plus OpenAPI at `/docs`.
-- A correlation id (`X-Request-ID`) bound to every request and every log line.
-- A test suite that passes **with no network and no Qdrant running**.
-
-What deliberately does not exist yet: ingestion, embeddings, retrieval, reranking, generation, evaluation. Readiness reports whether a vector store is *configured*; it opens no sockets. See the [roadmap](#roadmap).
+M0–M6 are implemented: ingestion, hybrid retrieval, reranking, cited generation, observability seams and the two-tier evaluation harness all have offline paths. The default checks require no credentials or network; hosted providers and exported traces remain explicit opt-ins.
 
 ## Endpoints
 
@@ -428,8 +420,8 @@ come from a labelled document? That is `hit@k` — coarser than `recall@k`, and
 the only metric the current document-level labels support.
 
 It reports and never gates. No thresholds, no non-zero exit on a low score:
-gating a 14-item seed set would be theatre, and the harness with Ragas metrics
-and a CI gate is M6.
+gating a 14-item seed set would be theatre, and the larger evaluation harness
+and a CI gate were deferred to M6.
 
 **How to read the number.** On a `fake`-embedded collection it is a plumbing
 assertion — the corpus is indexed, both branches return, fusion orders, and the

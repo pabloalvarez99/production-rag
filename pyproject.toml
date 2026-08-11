@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "production-rag"
 version = "0.1.0"
-description = "Production-grade RAG service: hybrid retrieval over Qdrant, cross-encoder reranking, grounded citations and a Ragas evaluation gate."
+description = "Production-grade RAG service with hybrid retrieval, cross-encoder reranking, grounded citations, and a two-tier offline evaluation harness."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -16,10 +16,8 @@ keywords = [
     "qdrant",
     "hybrid-search",
     "reranking",
-    "llamaindex",
     "langgraph",
     "fastapi",
-    "ragas",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -63,15 +61,11 @@ dev = [
     "mypy>=1.13",
     "types-PyYAML>=6.0.12",
 ]
-# Declared, still unused: the remaining M5-M6 stack, kept here so the dependency
-# decision is reviewable now. Lower bounds only — these libraries move fast and
-# pinning them here would fight the lockfile that belongs in CI. langgraph left
-# this extra in M4 and is a base dependency now, because the query path imports
-# it unconditionally.
+# Compatibility alias for the local reranker extra. Sentence Transformers is
+# imported by the live local cross-encoder adapter, so it remains a real option
+# rather than a declaration of unused architecture.
 rag = [
-    "llama-index>=0.12",
     "sentence-transformers>=3.3",
-    "ragas>=0.2",
 ]
 # The local cross-encoder reranker, and nothing else. Separate from `rag` so a
 # deployment that wants reranking does not also pull LangGraph and ragas — and
@@ -92,14 +86,9 @@ obs = [
     "langfuse>=2.53",
     "opentelemetry-api>=1.28",
 ]
-# Declared, still unused: the Ragas judge ADR-0003 names. The M6 runner ships a
-# deterministic offline judge and an OpenAI judge, and deliberately does NOT
-# offer a `ragas` judge kind -- a column labelled "ragas" holding numbers Ragas
-# never computed is worse than no column. Installing this changes nothing until
-# that adapter exists and has been run.
-eval = [
-    "ragas>=0.2",
-]
+# Ragas returns as a real dependency if and when an optional adapter is built
+# behind RUN_LLM_EVALS=1, not before.
+eval = []
 
 [project.scripts]
 # Same entrypoint as `python -m production_rag.ingest`, for anyone who prefers a

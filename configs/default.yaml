@@ -279,7 +279,9 @@ generation:
   max_context_tokens: 6000
   timeout_seconds: 60
   max_retries: 3
-  stream: true
+  # A true flag for behaviour that does not exist is the same failure class as
+  # presenting a DECLARED block as live. The query path returns whole answers.
+  stream: false
   # Note there is deliberately no `fail_open` here, unlike the rerank block. A
   # failed reranker leaves a result that is correct in kind and ordered worse; a
   # failed generator leaves nothing to substitute except an ungrounded answer,
@@ -519,8 +521,9 @@ observability:
     sample_rate: 1.0
 
   metrics:
-    # status: DECLARED ONLY. Nothing serves /metrics yet — `enabled: true` here
-    # records the intended shape, not a live endpoint. Kept because the bucket
+    # status: DECLARED ONLY. Nothing serves /metrics yet. A true flag for
+    # behaviour that does not exist is the same failure class as presenting a
+    # DECLARED block as live. Kept because the bucket
     # choice is the part worth deciding once: retrieval is tens of ms and
     # generation is seconds, so a default linear histogram would put every real
     # request in one bucket.
@@ -529,7 +532,7 @@ observability:
     # latency; this block is the latter, and so is anything about behaviour
     # under concurrency. Cost and token accounting are not here either — the
     # provider reports token counts and nothing aggregates them yet.
-    enabled: true
+    enabled: false
     # Prometheus-compatible exposition on the API itself.
     path: /metrics
     latency_buckets_seconds: [0.1, 0.25, 0.5, 1, 2, 5, 10, 30]

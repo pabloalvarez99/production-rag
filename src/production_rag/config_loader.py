@@ -316,7 +316,9 @@ class GenerationConfig(_Section):
     max_context_tokens: int = Field(default=6000, gt=0)
     timeout_seconds: float = Field(default=60.0, gt=0)
     max_retries: int = Field(default=3, ge=0)
-    stream: bool = True
+    # Whole-answer generation is live; streaming is not. Defaulting this to
+    # true would present declared behaviour as implemented behaviour.
+    stream: bool = False
     citations: CitationsConfig = CitationsConfig()
     prompt: PromptConfig = PromptConfig()
 
