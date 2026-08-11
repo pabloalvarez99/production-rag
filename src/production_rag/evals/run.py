@@ -35,7 +35,8 @@ from typing import Any
 
 import structlog
 
-from production_rag.config import Settings, get_settings
+from production_rag.config import Settings
+from production_rag.config import get_settings as get_settings
 from production_rag.config_loader import ConfigFileError, YamlConfig, load_yaml_config
 from production_rag.evals.judges import (
     JUDGE_FAKE,
@@ -64,7 +65,8 @@ from production_rag.ingest.cli import (
 )
 from production_rag.retrieval.cli import resolve_searchable_store
 from production_rag.retrieval.embeddings import EmbeddingError
-from production_rag.retrieval.hybrid import RETRIEVAL_MODES, RetrievalError, Retriever
+from production_rag.retrieval.hybrid import RETRIEVAL_MODES, RetrievalError
+from production_rag.retrieval.hybrid import Retriever as Retriever
 from production_rag.retrieval.rerank import RERANK_KINDS, RERANK_OFF, RerankError, build_reranker
 from production_rag.retrieval.sparse import SparseError
 from production_rag.retrieval.store import CollectionMismatchError, VectorStoreError

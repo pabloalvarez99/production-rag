@@ -9,6 +9,7 @@ before M5, and one that is configured emits spans named after the graph nodes.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import AbstractContextManager
 
 import pytest
 import structlog
@@ -20,7 +21,7 @@ from production_rag.graph.nodes import QueryDeps
 from production_rag.graph.state import NODE_NAMES
 from production_rag.ingest.models import Chunk, Document
 from production_rag.observability.context import current_request_id
-from production_rag.observability.tracer import NullTracer, RecordingTracer
+from production_rag.observability.tracer import NullTracer, RecordingTracer, Span
 from production_rag.query_pipeline import QUERY_SPAN, build_query_pipeline, run_query
 from production_rag.retrieval.embeddings import FakeEmbeddingProvider
 from production_rag.retrieval.hybrid import Retriever
@@ -232,7 +233,9 @@ class TestTracingNeverFailsAQuery:
             def enabled(self) -> bool:
                 return True
 
-            def span(self, name: str, **attributes: object) -> object:
+            def span(
+                self, name: str, **attributes: object
+            ) -> AbstractContextManager[Span, bool | None]:
                 raise RuntimeError("trace backend unreachable")
 
             def flush(self) -> None:
