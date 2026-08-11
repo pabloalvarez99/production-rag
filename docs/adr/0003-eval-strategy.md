@@ -1,9 +1,15 @@
 # ADR 0003 — Two-tier evaluation: free retrieval gate, sampled answer judge
 
-- **Status:** Proposed
-- **Date:** 2026-08-10
+- **Status:** Accepted — both tiers implemented in M6, at source granularity
+- **Date:** 2026-08-10 (proposed), 2026-08-11 (accepted on M6 landing)
 - **Deciders:** production-rag maintainers
 - **Supersedes:** —
+- **Relates to:** [ADR 0001](0001-hybrid-qdrant.md) (the fusion constants tier 1
+  turns into an empirical question), [ADR 0004](0004-rerank-cross-encoder.md)
+  (the stage whose value is a delta, so it needs a before and an after),
+  [ADR 0005](0005-grounded-generation.md) (the refusal behaviour the
+  `unanswerable` slice measures), [ADR 0006](0006-observability.md) (the ops
+  signals this ADR insists are not eval metrics)
 
 ## Context
 
@@ -84,3 +90,43 @@ Supporting decisions:
   [evaluation.md](../evaluation.md).
 - If the golden set reaches ~200 items, revisit whether the judge sample can
   shrink further without losing the ability to detect a real regression.
+
+## Implementation status at acceptance (M6)
+
+This ADR is accepted as the strategy, and M6 implemented both tiers behind one
+runner (`python -m production_rag.evals.run`). Where the implementation departs
+from the Decision above, it is recorded here rather than discovered later by
+someone who trusted that section:
+
+| Decided above | What M6 actually landed |
+|---|---|
+| Tier 1 metrics `recall@k`, `mrr`, `ndcg@k` over `relevant_chunk_ids` | **the same arithmetic over `expected_source_paths`** — `source_hit_at_k`, `source_recall_at_k`, `mrr`, `ndcg_at_k` in `evals.tier1_retrieval`. Document granularity, and the names say `source_` for that reason. `ndcg` uses binary gain: the graded `relevance` field is on no item |
+| Per-branch reporting (`dense`, `sparse`, `fused`) | **landed** — `evals.ablation`, which also runs the fused set through the fake reranker |
+| Tier 2: `faithfulness`, `answer_relevance`, `citation_precision`, `refusal_accuracy`, judged | **landed, and split by cost.** `citation_precision`, `invalid_marker_rate` and `refusal_accuracy` are judge-free and deterministic; `faithfulness` and `relevance` come from an `AnswerJudge` whose default is offline and lexical. `citation_precision` is document-level, so it checks the citation's source and not its support |
+| Judged only where retrieval succeeded | **not implemented.** `evaluate_tier2` answers every case in the sample. Acceptable while the per-case rows are read individually; not acceptable once an aggregate is quoted, because a `faithfulness` mean over items whose document was never retrieved grades the retriever |
+| Sampled (default 50), fixed seed | **landed** — `--sample` / `--seed 42`, both echoed in the report. The default is *every* case, because 17 < 50 |
+| Judge calibrated once against 20 hand-labelled items | **not done.** The hosted judge exists behind `--judge openai`, `RUN_LLM_EVALS=1` and a credential; no calibration subset has been labelled, so its output is a number and not a measurement |
+| Stratified dataset, 15% unanswerable | **partly.** 17 items: 41% conceptual, 24% exact-token, 12% multi-hop (under target), 24% unanswerable (over target on purpose — 15% of 17 is two items, too few for the slice to show a pattern) |
+| `recall@5 ≥ 0.80` and `faithfulness ≥ 0.90` as gates | **replaced by one opt-in flag.** `evals.thresholds` in `configs/default.yaml` is read by nothing. The only gate is `--fail-under-hit`, on `source_hit_at_k`, default `0.0` |
+
+Four corrections follow, and they are binding on whoever arms the gate:
+
+1. **The thresholds in `configs/default.yaml` are placeholders.** The Decision
+   above says thresholds come from the first baseline run. No baseline run has
+   been performed, so the committed values satisfy the letter of nothing. They
+   are replaced by measured numbers, not adjusted toward them.
+2. **The gate is deliberately on the deterministic metric.** `--fail-under-hit`
+   scores `source_hit_at_k` and nothing else. Gating a judged column would make a
+   build outcome depend on a proxy this ADR requires to be calibrated first.
+3. **A gate on 17 items would fire on noise.** One item is roughly eight points
+   of source `hit@k`. The dataset reaching ~50 items is a precondition for the
+   gate, not a nice-to-have alongside it.
+4. **The retrieval-succeeded filter is outstanding work, not a nuance.** Until it
+   lands, tier 2 aggregates are read against tier 1's `misses` from the same run
+   — which is why both tiers report into one file.
+
+Chunk-level labels remain the blocker for the tier-1 metrics as specified. They
+wait on chunking settling, because a `relevant_chunk_ids` label survives a
+chunk-size change by silently repointing at different text — the failure mode
+that is worse than breaking loudly. The metric functions do not change when the
+labels arrive; the names lose their `source_` prefix.

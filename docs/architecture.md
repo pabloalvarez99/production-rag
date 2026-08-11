@@ -1,6 +1,6 @@
 # Architecture
 
-Status: **M5 (observability).** Last updated: 2026-08-11.
+Status: **M6 (evaluation).** Last updated: 2026-08-11.
 
 M0 shipped the walking skeleton: package, config, health and readiness probes,
 container stack. M1 added the offline ingest path — walk, chunk, embed (dense),
@@ -31,15 +31,25 @@ to leak, because copying internal state elsewhere is its entire job — so promp
 and passages are never a signal, at any level. See
 [Observability](#observability-m5).
 
+M6 adds **offline evaluation**, both tiers, behind one runner
+(`production_rag.evals.run`): retrieval metrics over the golden set and
+answer-side metrics over the real `run_query` path, in one process and one
+versioned report. Its defaults are offline — fake embedder, fake model, fake
+judge — so the whole thing is free, deterministic and CI-runnable, and the report
+states `offline_defaults` so nobody mistakes a plumbing check for a quality
+number. See [Evaluation](#evaluation-m6) and
+[ADR 0003](adr/0003-eval-strategy.md).
+
 Ownership note: this document describes the contract the M4 query path
 implements. The library (`production_rag.generation`, the graph) is A1's; the
 HTTP surface is A3's; this file, the runbook, the data model and the ADRs are
 A2's.
 
-What M4 and M5 do **not** add: measured quality. There is still no faithfulness
-number, no citation-precision number and no Ragas harness — that is M6, and no
-number in this repository has been produced by one. Nor has any retrieval number
-here been measured against a semantically meaningful embedding: see
+What M6 does **not** add: a defensible *quality* number, or an armed merge gate.
+The judge is uncalibrated and offline by default, `citation_precision` checks the
+cited document rather than the cited passage, and the only gate is an opt-in flag
+that defaults to reporting. Nor has any retrieval number here been measured
+against a semantically meaningful embedding: see
 [the fake embedder](#two-embedders-one-path), [the fake reranker](#three-rerank-providers-one-interface)
 and, one stage later again, [the fake generator](#two-generation-providers-one-contract).
 
@@ -76,6 +86,7 @@ footprint stays at two containers.
 | `production_rag.generation` | New in M4: prompt assembly under a context budget, the LLM providers (`fake`, `openai`), `[n]` marker resolution into `Citation` objects, and the refusal path. | A1 |
 | `production_rag.graph` | New in M4: the LangGraph `StateGraph` that wires normalise → retrieve → fuse → rerank → generate → cite, the rerank bypass edge and the refusal edge. Nodes are adapters; no business logic. | A1 |
 | `production_rag.query_pipeline` | New in M4: the one public entry point — `run_query()` for a one-shot call, `QueryPipeline` for a process that serves many. Everything under `graph/` and `generation/` is an implementation detail of it. | A1 |
+| `production_rag.evals` | New in M6: the offline two-tier evaluation. `run` is the unified entry point; `tier1_retrieval` derives source-level `hit`/`recall`/`mrr`/`ndcg` from `source_hit`; `tier2_answer` scores answers from the real `run_query` path; `judges` supplies the optional `faithfulness`/`relevance` columns; `ablation` compares branches. | A1 |
 | `production_rag.query` | New in M4: the batch CLI over that entry point, with the same stdout-JSON and graded-exit-code contract as ingest and retrieve. | A3 |
 | `POST /v1/query` | New in M4: the HTTP surface — request validation, provider selection, correlation id, and a narrow response projection. | A3 |
 | `qdrant` container | Dense and sparse vectors plus chunk payloads in one collection. Pinned to `qdrant/qdrant:v1.13.2`. | A2 |
@@ -823,11 +834,11 @@ only stage in the system that spends money per document, which is why the
 content hash and the incremental skip exist before the embed call rather than
 after it.
 
-## What is live in M5 vs declared-only
+## What is live vs declared-only
 
 `configs/default.yaml` is deliberately broader than what the code consumes.
 
-| Config block | State after M5 |
+| Config block | State after M6 |
 |---|---|
 | `ingest` (walk, chunking, embedding, incremental) | live |
 | `ingest.sparse` (BM25 k1/b, lowercase, stopwords) | **live** — vectors are written at ingest |
@@ -838,7 +849,9 @@ after it.
 | `generation` (provider, model, temperature, budgets, timeout, retries, stream) | **live** — read by the query path. Answer quality is real only on `openai`; the `fake` provider exercises the contract, not the answer |
 | `generation.citations` (style, require_citation, refuse_without_evidence, refusal_message) | **live** — `[n]` markers are resolved and the refusal edge is taken from these keys |
 | `generation.prompt` (system_path, include_heading_path, max_chunks_in_prompt) | **live** — the system prompt is a file under `configs/prompts/`, not a string in code |
-| `evals` | thresholds declared; a source-level `hit@k` script exists, the Ragas harness does not — M6 |
+| `evals.dataset_path` | **live** — the golden set is the default input of both tier-1 commands (`--golden` overrides it) |
+| `evals.retrieval.metrics`, `evals.answer.*` | declared only — the runner takes tier, k, sample, embedder, model and judge from CLI flags, not from this block. `recall@k`/`ndcg@k` as *specified* need chunk-level labels that do not exist; what runs is the source-level equivalent |
+| `evals.thresholds` | **read by nothing**, and not baseline-derived. The only gate is the runner's `--fail-under-hit` flag on `source_hit_at_k`, default `0.0`. See [evaluation](evaluation.md#thresholds) |
 | `observability.logging` (level, format, `include_request_id`) | **live** — structured JSON logs with a request id on every line |
 | `observability.logging.log_prompts` / `log_retrieved_text` | **live as a guard**: both default `false` and nothing logs prompt or passage text. Local debugging only, never a deployment — see [ADR 0006](adr/0006-observability.md) |
 | `observability.tracing` (Langfuse, keys by env-var name, `sample_rate`) | **opt-in** — off by default, and the whole system runs offline without it; a trace failure never fails a request |
@@ -945,7 +958,7 @@ anyone sees them. Those are numbers the system either records or does not.
          │ X-Request-ID           │                              │
          │ X-Response-Time-ms     │                              │
          ▼                        ▼                              ▼
-     the caller            eval harness (M6)              log aggregator
+     the caller            eval harness (tier 2)          log aggregator
                                                                  │
                                       opt-in, off by default ────┤
                                                                  ▼
@@ -1008,8 +1021,8 @@ name and embedding model is describing its interior to anyone who asks.
 
 ### The three ops signals that need no judge
 
-Quality measurement is offline, sampled, and M6 ([evaluation](evaluation.md)).
-These three are none of those things — they are produced by the request path
+Answer-quality measurement is offline, sampled, and judged
+([evaluation](evaluation.md)). These three are none of those things — they are produced by the request path
 itself, on every request, for free, and they are what an operator watches:
 
 | Signal | Where | What a change in it means |
@@ -1090,6 +1103,78 @@ and the standing warning on `log_prompts` in the [runbook](runbook.md#never-turn
 - **No behaviour under load.** Per-request timings say nothing about concurrency;
   load testing waits for a real deployment target.
 
+## Evaluation (M6)
+
+Evaluation is an **offline path**, structurally separate from the request path.
+It reuses the retriever and `run_query` rather than the endpoint: an eval that
+drives HTTP would measure serialization, and one that reimplements the pipeline
+would measure the reimplementation — and the divergence would show up as a
+passing eval over a broken service.
+
+```
+data/eval/golden.jsonl                     configs/default.yaml
+  17 items, document-level labels            evals.dataset_path (default only)
+  answerable: true|false                     evals.thresholds ── read by nothing
+         │                                            │
+         ▼                                            ▼
+┌───────────────────────── evals.run ─────────────────────────┐
+│  --tier 1 | 2 | all   --embedder --llm --judge --sample     │
+│  offline defaults: fake embedder, fake model, fake judge    │
+└───────────┬─────────────────────────────┬───────────────────┘
+            ▼                             ▼
+┌───────────────────────────┐ ┌───────────────────────────────┐
+│ TIER 1 — tier1_retrieval  │ │ TIER 2 — tier2_answer         │
+│ built on source_hit       │ │ answers via run_query         │
+│                           │ │                               │
+│ source_hit_at_k           │ │ judge-free:                   │
+│ source_recall_at_k        │ │   citation_precision          │
+│ mrr, ndcg_at_k            │ │   invalid_marker_rate         │
+│ by_category               │ │   refusal_accuracy            │
+│                           │ │ judged (AnswerJudge):         │
+│ no judge, no key,         │ │   faithfulness, relevance     │
+│ deterministic             │ │ hosted judge: --judge openai  │
+│                           │ │   + RUN_LLM_EVALS=1 + key     │
+└───────────┬───────────────┘ └───────────────┬───────────────┘
+            └──────────────┬──────────────────┘
+                           ▼
+        one versioned JSON report (report_version: 1)
+        offline_defaults · embedder/llm/rerank · gate{...}
+                           │
+                           ▼
+              --fail-under-hit (default 0.0 = report only)
+              exit 1 when source_hit_at_k falls below it
+```
+
+Five properties of that picture are load-bearing:
+
+- **One runner, one report.** ADR-0003's stated cost of a two-tier split was
+  "two commands and two sets of results to reconcile". Both tiers run in one
+  process over the same sample and the same collection, so the numbers are
+  comparable by construction.
+- **The tier-1 aggregate denominator is 13, not 17.** The four
+  `answerable: false` items carry no `expected_source_paths`, and
+  `GoldenCase.is_scorable` is exactly `bool(expected_source_paths)`. They are
+  excluded and reported as `unscored_cases`; their correct outcome is a refusal,
+  which is tier 2's `refusal_accuracy`.
+- **Everything is source-level.** `source_hit_at_k` and `source_recall_at_k` are
+  named that way because the labels are documents, not chunks;
+  `citation_precision` inherits the same limit — right document, not necessarily
+  supporting passage.
+- **Cost is opt-in twice.** A hosted judge needs the flag, the
+  `RUN_LLM_EVALS=1` environment variable and a credential. The default run is
+  free, offline and deterministic, and the report says so in `offline_defaults`
+  rather than leaving it to be inferred from the score.
+- **One gate, off by default.** `--fail-under-hit` is the only thing that can
+  fail a run, it scores the deterministic metric, and `configs/default.yaml`
+  thresholds are read by nothing. See
+  [evaluation](evaluation.md#thresholds).
+
+The eval path touches none of the request path's concerns: no request id, no HTTP
+status, no tracing span. Conversely the ops signals the request path emits —
+`timings_ms`, `invalid_markers`, `hits_used` — are not eval metrics, and the
+distinction is spelled out in
+[evaluation](evaluation.md#ops-signals-are-not-eval-metrics).
+
 ## Deployment shape
 
 Local development is the only target through M4 and it is `docker compose up -d
@@ -1110,12 +1195,17 @@ And a request without authentication can now spend money per call, which is the
 reason rate limiting moves from "nice to have" to M7's headline: an unprotected
 `POST /v1/query` on a public address is a billing incident waiting for a crawler.
 
-## Non-goals (M4 + M5)
+## Non-goals (M4 + M5 + M6)
 
-- No measured **answer** quality. Faithfulness, citation precision and refusal
-  accuracy all need an LLM judge over a real golden set — M6. The citation
-  mechanics make an unfaithful answer easy to *check*; they do not measure a
-  rate, and no such number appears in this repository.
+- No defensible **answer-quality** number. M6 scores answers, but the default
+  judge is lexical overlap, no judge has been calibrated against hand labels, and
+  `citation_precision` checks the cited *document* rather than the cited passage.
+  The citation mechanics make an unfaithful answer easy to *check*; nothing here
+  measures a faithfulness rate that is worth quoting.
+- No armed merge gate. The mechanism exists (`--fail-under-hit` on
+  `source_hit_at_k`) and defaults to reporting; the baseline run that would set
+  its value has not been performed, and 17 golden items cannot carry a
+  threshold.
 - No measured retrieval quality number either, before or after rerank. The
   `hit@k` script reports what the current corpus, embedder and reranker produce;
   on the `fake` embedder and the `fake` reranker that number is plumbing.

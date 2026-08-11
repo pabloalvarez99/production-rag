@@ -445,7 +445,7 @@ strips the `sample/` prefix every label expects.
 
 Details: [runbook](docs/runbook.md#retrieve-m2) for operations and failure modes,
 [architecture](docs/architecture.md#retrieval-flow-m2--live) for the fusion
-mechanics, [evaluation](docs/evaluation.md#status-after-m4) for what is and is
+mechanics, [evaluation](docs/evaluation.md#status-after-m6) for what is and is
 not measured, [ADR 0001](docs/adr/0001-hybrid-qdrant.md) — now **Accepted** — for
 why hybrid on one collection.
 
@@ -723,7 +723,7 @@ and the refusal decision, [ADR 0002](docs/adr/0002-langgraph-query.md) — now
 [architecture](docs/architecture.md#the-query-graph-m4) for the graph and stage
 mechanics, [runbook](docs/runbook.md#query-m4) for operating the endpoint and its
 failure modes, [data model](docs/data-model.md#citation) for the `Citation` and
-`QueryResponse` shapes, [evaluation](docs/evaluation.md#status-after-m4) for what
+`QueryResponse` shapes, [evaluation](docs/evaluation.md#status-after-m6) for what
 M4 made measurable versus what M6 will measure.
 
 ## Observability (M5)
@@ -827,6 +827,107 @@ signal flow and the `debug` contract, [runbook](docs/runbook.md#observability-m5
 for debugging a slow query, enabling Langfuse, and the full `log_prompts`
 warning, [evaluation](docs/evaluation.md#ops-signals-are-not-eval-metrics) for
 why none of these numbers is a quality claim.
+
+## Evaluation gate (M6)
+
+M6 makes the system measure itself offline: both tiers of
+[ADR 0003](docs/adr/0003-eval-strategy.md) (Accepted), behind one runner, into
+one versioned report. It deliberately does **not** arm a merge gate, and the
+second half of this section is why — a gate nobody can defend is worse than no
+gate, because the pipeline still claims one.
+
+| | Tier 1 — retrieval | Tier 2 — answers |
+|---|---|---|
+| Metrics | `source_hit_at_k`, `source_recall_at_k`, `mrr`, `ndcg_at_k` | `citation_precision`, `invalid_marker_rate`, `refusal_accuracy` — then `faithfulness`, `relevance` |
+| Judge | none | none for the first three; an `AnswerJudge` for the last two |
+| Cost | free, offline, deterministic | free offline with the fake generator and judge; money with `--llm openai` / `--judge openai` |
+| Run it | on every change | on a change that touches generation, citations or the evidence bar |
+| Module | `evals.tier1_retrieval` (built on `evals.source_hit`) | `evals.tier2_answer`, answers via `run_query` |
+
+### Running it
+
+```bash
+make reingest-fake        # the eval scores what is in Qdrant; rebuild it first
+make eval-tier1           # retrieval only
+make eval-tier2-fake      # answers, fake generator and fake judge
+make eval-all-fake        # both tiers, one report
+
+# the runner directly, with knobs
+python -m production_rag.evals.run --tier all --embedder fake --llm fake     --k 5 --report data/eval/reports/all-fake.json
+```
+
+Defaults are offline — fake embedder, fake model, fake judge — so the default
+invocation is free, deterministic, CI-runnable, and a **plumbing check rather
+than a quality claim**. The report says which in `offline_defaults`, so nobody
+has to reconstruct the invocation from the score. Anything that costs money is
+opt-in twice: a flag, and for a hosted judge `RUN_LLM_EVALS=1` plus a credential.
+
+Reading the report: `score` fields come after `offline_defaults`, `embedder`,
+`llm` and `rerank`, because a number without those is not reproducible. The
+tier-1 aggregate is over **13** cases, not 17 — the four `answerable: false`
+items carry no expected path, so they are excluded as `unscored_cases`, and
+their correct outcome is a refusal that tier 2 scores instead.
+`refusal_failures` is the actionable list: a missed refusal is a hallucination
+with citations on it.
+
+### The golden set
+
+17 items with document-level labels, committed at
+[`data/eval/golden.jsonl`](data/eval/golden.jsonl). Every item carries an
+explicit `answerable`, and four (`q-0012`, `q-0015`, `q-0016`, `q-0017`) are the
+`unanswerable` slice — the only measurement of whether the system hallucinates
+under pressure.
+
+Those four are *topically adjacent*, not off-topic, on purpose. They use the
+corpus's own vocabulary and retrieve confident, well-scoring chunks that simply
+do not contain the fact asked for: a dollar figure, a Qdrant version, a
+multilingual model recommendation. An off-topic question would only prove that
+`score_threshold` works. These probe the failure that matters — a model answering
+from pretraining once retrieval has handed it something plausible to cite.
+
+### Why no gate is armed
+
+There is exactly one gate mechanism, `--fail-under-hit`, it scores
+`source_hit_at_k`, and it defaults to `0.0` (report only):
+
+```bash
+make eval-tier1 EVAL_ARGS="--fail-under-hit 0.8"   # exit 1 if source hit@k < 0.80
+```
+
+Nothing sets it in CI yet, for reasons that are about the numbers, not the
+plumbing:
+
+- **No baseline run has been recorded.** ADR-0003 requires thresholds to come
+  from a first full run on an `openai`-embedded collection. The
+  `evals.thresholds` values in `configs/default.yaml` were written with the ADR,
+  before anything ran — and they are read by nothing, so they gate nothing
+  either.
+- **17 items cannot carry a threshold.** One item is roughly eight points of
+  source `hit@k`. A gate this size fires on noise, and a gate that fires on noise
+  gets switched off within a week.
+- **The judged columns are not gateable.** The default judge is lexical overlap;
+  the hosted one is uncalibrated. Gating a build on a non-deterministic,
+  uncalibrated proxy is how a team learns to ignore its own CI.
+- **Every metric is source-level.** `source_recall_at_k` measures documents, not
+  chunks; `citation_precision` checks that a citation points at an expected
+  *document*, not that the passage supports the sentence. The names carry the
+  `source_` prefix so a report cannot overstate itself.
+
+### One distinction worth carrying
+
+`invalid_marker_rate` is free and looks like citation quality. It is not. It
+counts markers that resolved to **nothing**; `citation_precision` asks whether
+the citations that **did** resolve came from an expected document. The two are
+disjoint, so a spotless `invalid_marker_rate` is fully compatible with every
+citation pointing at the wrong document — and both are compatible with a cited
+passage that does not support its sentence, which is the judge's question and
+nobody else's.
+
+Details: [evaluation](docs/evaluation.md#status-after-m6) for what is and is not
+measured, how to read the report and how to interpret the gate;
+[ADR 0003](docs/adr/0003-eval-strategy.md) for the decision and the gap between
+it and the implementation; [`data/eval/README.md`](data/eval/README.md) for the
+schema, the optional fields and the authoring rules.
 
 ## License
 

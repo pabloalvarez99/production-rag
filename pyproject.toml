@@ -92,6 +92,14 @@ obs = [
     "langfuse>=2.53",
     "opentelemetry-api>=1.28",
 ]
+# Declared, still unused: the Ragas judge ADR-0003 names. The M6 runner ships a
+# deterministic offline judge and an OpenAI judge, and deliberately does NOT
+# offer a `ragas` judge kind -- a column labelled "ragas" holding numbers Ragas
+# never computed is worse than no column. Installing this changes nothing until
+# that adapter exists and has been run.
+eval = [
+    "ragas>=0.2",
+]
 
 [project.scripts]
 # Same entrypoint as `python -m production_rag.ingest`, for anyone who prefers a

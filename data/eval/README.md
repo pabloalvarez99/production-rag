@@ -11,7 +11,7 @@ is split in two tiers.
 One JSON object per line. JSONL rather than a single JSON array so a malformed
 entry breaks one line instead of the whole file, and diffs stay readable.
 
-The file is committed and currently holds the **seed set**: 14 items labelled at
+The file is committed and currently holds the **seed set**: 17 items labelled at
 *document* granularity. The chunk-level schema below is the target, not what is
 in the file today — see [seed schema](#seed-schema-current) first.
 
@@ -59,6 +59,7 @@ exists.
   "id": "q-0006",
   "question": "What do the k1 and b parameters control in the BM25 scoring formula?",
   "expected_source_paths": ["sample/08-bm25-vs-dense.md"],
+  "answerable": true,
   "category": "exact_token",
   "notes": "Single-character identifiers. Dense retrieval is expected to lose this one badly."
 }
@@ -70,7 +71,43 @@ exists.
 | `question` | string | yes | the query as a user would phrase it |
 | `expected_source_paths` | string[] | yes | paths relative to `data/raw/`; `[]` for unanswerable items |
 | `category` | enum | yes | `conceptual` \| `exact_token` \| `multi_hop` \| `unanswerable` |
+| `answerable` | bool | no (written on every item) | `false` means the correct behaviour is a refusal |
 | `notes` | string | no | why this item exists; read by whoever debugs its failure |
+
+### Optional fields, and which reader actually consumes them
+
+Three fields in the target schema are optional in the sense that the tier-1
+retrieval scorer runs without them. They are not decorative — each one is the
+sole input to a metric that cannot be computed otherwise, which is why the table
+below names the consumer rather than saying "future use":
+
+| Field | Consumed by | What is lost without it |
+|---|---|---|
+| `answerable` | the refusal slice of tier 2 (`refusal_accuracy`) | nothing today; the tier-1 scorer derives scorability from an empty `expected_source_paths` instead — see below |
+| `relevance` | `ndcg@k` | grading collapses: every listed chunk is treated as relevance `1`, so a run cannot distinguish "the fully answering chunk is at rank 1" from "the partial one is" |
+| `expected_answer` | the tier-2 judge | the judge scores `faithfulness` against the cited passages alone, with no reference answer to compare against |
+
+`relevance` and `expected_answer` belong to the chunk-level schema and are absent
+from every item in the file today. `answerable` **is** written on every item, and
+the reason it is still marked optional is worth stating precisely, because the
+two facts look contradictory:
+
+- **`production_rag.evals.source_hit` never reads it.** `GoldenCase.from_json`
+  parses `id`, `question`, `expected_source_paths` and `category`; `is_scorable`
+  returns `bool(self.expected_source_paths)`. Unanswerable items are excluded
+  from the aggregate because their label list is empty, not because a flag says
+  so. Adding the field changed no number — it was verified against the loader,
+  which still reports 13 scorable and 4 unscored.
+- **It is written anyway, on every item, because the invariant is the point.**
+  `answerable == bool(expected_source_paths)` is now checkable by inspection
+  rather than inferable. An item labelled `unanswerable` that carries a source
+  path, or an answerable item whose labels were dropped in a bad merge, reads as
+  a contradiction on the line instead of silently leaving the aggregate.
+
+So the field is redundant for tier 1 by design and load-bearing for tier 2: an
+`unanswerable` item is the only kind whose *correct* outcome is a refusal, and
+`refusal_accuracy` needs to know which items those are without inferring it from
+the absence of something.
 
 Every `expected_source_paths` entry must resolve to a committed file under
 `data/raw/`. A path that does not exist scores as a permanent miss and looks
@@ -115,11 +152,65 @@ as the coarse check that survives the next re-chunk.
 Minimum useful size is 50 items. Below that, one item moves `recall@5` by two
 points and the metric stops being a signal.
 
-The committed seed set is 14 items and is therefore **not** a merge gate. One
-item moves `hit@5` by seven points. It exists to pin the schema, to prove the
-corpus is reachable end to end, and to be the thing that gets extended rather
+The committed seed set is 17 items and is therefore **not** a merge gate. One
+item moves `hit@5` by roughly eight points. It exists to pin the schema, to prove
+the corpus is reachable end to end, and to be the thing that gets extended rather
 than invented under deadline. Treat its numbers as a smoke test, never as a
 quality claim.
+
+### Where the seed set stands against those targets
+
+Measured on the committed file, not aspired to:
+
+| Category | Target | Seed set | Reading |
+|---|---|---|---|
+| `conceptual` | 40% | 7 / 17 (41%) | on target |
+| `exact_token` | 25% | 4 / 17 (24%) | on target |
+| `multi_hop` | 20% | 2 / 17 (12%) | **under** — the context-budget slice is the thin one, and it is the one that catches truncation |
+| `unanswerable` | 15% | 4 / 17 (24%) | deliberately over, see below |
+
+The two deviations have different causes and only one of them is a decision.
+
+**`unanswerable` is over target on purpose.** Fifteen percent of a 17-item set is
+two and a half items. A refusal slice of two cannot distinguish "the system
+refuses correctly" from "the system refused twice" — a single flip is fifty
+percent of the slice. M6 raised it to four (`q-0012`, `q-0015`, `q-0016`,
+`q-0017`) so that the slice has enough items to show a pattern. That inflates the
+share now and self-corrects as the set grows toward 50, at which point the target
+share is what should be honoured. Four items is still too few to quote a
+`refusal_accuracy` figure from; it is enough to see the refusal path fire, or
+fail to.
+
+**`multi_hop` being under target is a gap, not a choice.** It is recorded here so
+the next person extending the set knows which slice to write first.
+
+### The unanswerable items are adjacent, not off-topic
+
+The tempting way to write an unanswerable item is to ask about something the
+corpus has never heard of. Such an item measures almost nothing: retrieval
+returns low-scoring junk, `score_threshold` filters it, and the system refuses
+via `no_evidence` without the model ever being called. That tests a config
+constant.
+
+The four committed items are all *topically adjacent* instead — they use the
+corpus's own vocabulary and retrieve confident, well-scoring, genuinely relevant
+chunks that simply do not contain the fact asked for:
+
+| Item | Asks for | Why retrieval succeeds and the answer still must not exist |
+|---|---|---|
+| `q-0012` | a concurrency limit | the corpus discusses latency and cost profiles; it states no capacity figure |
+| `q-0015` | a dollar cost per month | `08-bm25-vs-dense.md` compares cost profiles at length and `00-intro.md` names embedding as the paid step — no document carries a currency figure |
+| `q-0016` | a Qdrant version number | `Qdrant` and `sparse vectors` are corpus vocabulary, so the sparse branch ranks `06-qdrant-payloads.md` high; no document states a version |
+| `q-0017` | a multilingual model recommendation | embeddings are discussed throughout, language coverage nowhere |
+
+`q-0017` differs in mechanism from the other three and that is why it exists: the
+first three ask for a *fact the corpus omits*, it asks for a *recommendation the
+corpus never makes*. The second is easier to hallucinate, because no specific
+missing token gives the gap away.
+
+The failure these catch is the one that matters: a model answering from
+pretraining once retrieval has handed it a plausible chunk to cite. On these
+items a refusal is the correct output and a fluent, cited answer is the defect.
 
 M2 added two `exact_token` items (`q-0013`, `q-0014`) whose questions carry rare
 literal strings that appear verbatim in exactly one corpus document. They are

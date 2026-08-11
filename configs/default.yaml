@@ -4,7 +4,7 @@
 # key existing here is not a promise that the runtime reads it yet. Each block
 # below carries a `status:` comment; docs/architecture.md holds the same table.
 #
-# Status after M5 (observability):
+# Status after M6 (evaluation):
 #   ingest            LIVE
 #   ingest.sparse     LIVE   BM25 vectors are written at ingest time
 #   qdrant            LIVE   (dense + sparse vectors, payload indexes, consistency)
@@ -16,15 +16,19 @@
 #   generation        LIVE   answers with [n] citations, or an explicit refusal;
 #                            the `fake` provider exercises the contract offline,
 #                            `openai` is the one that produces a real answer
-#   evals             M6     thresholds declared; only a hit@k script exists
+#   evals             LIVE   both tiers run (`python -m production_rag.evals.run`);
+#                            dataset_path is the only key the runner reads and the
+#                            thresholds below are read by NOTHING
 #   observability.logging  LIVE   structured logs, request id on every line
 #   observability.tracing  LIVE   opt-in export; off by default, offline works
 #   observability.metrics  DECLARED  nothing serves /metrics
 #
 # The whole path runs: ingest, hybrid retrieval, rerank, generation with
-# citations — and, from M5, reports per-node timings on every request. What is
-# NOT here is measured quality — no faithfulness number, no citation-precision
-# number, no Ragas harness. That is M6. See docs/evaluation.md.
+# citations — and, from M5, reports per-node timings on every request. From M6 it
+# also measures itself offline. What is still NOT here is a defensible quality
+# number: the default judge is offline and lexical, no judge has been calibrated,
+# citation_precision checks the cited document rather than the cited passage, and
+# no merge gate is armed. See docs/evaluation.md.
 #
 # Timings, invalid_markers and hits_used are OPS signals, not eval metrics: they
 # say what the system did, never whether the answer was right.
@@ -379,35 +383,70 @@ qdrant:
   write_consistency: wait
 
 # ---------------------------------------------------------------------------
-# Evals — offline quality gates.  status: M6 for everything below. The golden
-# seed set is committed and `scripts/eval_hit.py` computes source-level hit@k
-# from it, but that script reads NONE of these keys: it has no thresholds and
-# never gates. The metrics, thresholds and judge config here belong to the M6
-# harness, which is not written. See docs/evaluation.md.
+# Evals — offline quality measurement.  status: LIVE (M6) for both tiers,
+# DECLARED for almost every key below.  Rationale: docs/adr/0003-eval-strategy.md.
+#
+# What is LIVE: the golden set at `dataset_path` (17 items, document-level
+# labels) and `python -m production_rag.evals.run --tier 1|2|all`, wired as
+# `make eval-tier1` / `eval-tier2-fake` / `eval-all-fake`. Tier 1 reports
+# source_hit_at_k, source_recall_at_k, mrr and ndcg_at_k; tier 2 reports
+# citation_precision, invalid_marker_rate and refusal_accuracy without a judge,
+# plus faithfulness and relevance from one. Defaults are offline (fake embedder,
+# fake model, fake judge), so the default run is free, deterministic and a
+# PLUMBING check — the report says so in `offline_defaults`.
+#
+# What the runner actually reads from this block: `dataset_path` only, and only
+# as a default that `--golden` overrides. Tier, k, sample, seed, embedder, model,
+# judge and rerank are CLI flags, so a run is described by its invocation and its
+# report rather than by whichever profile happened to be loaded.
+#
+# The metric names here are the ADR's chunk-level ones. What runs is the
+# source-level equivalent, because the golden set labels documents, not chunks —
+# see docs/evaluation.md#retrieval-metrics.
+#
+# The thresholds below are READ BY NOTHING and are NOT baseline-derived. The only
+# gate is the runner's `--fail-under-hit` flag on source_hit_at_k, default 0.0
+# (report only). Replace these values with measured numbers from a recorded
+# baseline; do not adjust them toward one. See docs/evaluation.md#thresholds.
 # ---------------------------------------------------------------------------
 evals:
+  # Read (as a default) by the runner. Everything below it is not.
   dataset_path: data/eval/golden.jsonl
   results_dir: data/processed/eval-runs
-  # Retrieval metrics are computed from the golden relevant chunk ids; answer
-  # metrics need an LLM judge and cost money, hence the separate switch.
+  # Retrieval metrics are computed from the golden labels; answer metrics can use
+  # an LLM judge, which costs money, hence the separate switch.
   retrieval:
     enabled: true
+    # The ADR's names. The implementation computes the source-level equivalents
+    # (source_hit_at_k, source_recall_at_k, mrr, ndcg_at_k) because
+    # `relevant_chunk_ids` labels do not exist yet — chunk-level labels wait for
+    # chunking to settle, since a chunk-size change repoints them silently
+    # instead of breaking them loudly. ndcg uses binary gain: no item carries the
+    # graded `relevance` field.
     metrics: [recall@k, mrr, ndcg@k]
     k_values: [1, 3, 5, 10]
   answer:
+    # Not a switch the runner reads. Tier 2 runs when `--tier 2` or `--tier all`
+    # is passed; the judge is chosen with `--judge`, and a hosted one needs
+    # RUN_LLM_EVALS=1 and a credential on top of the flag.
     enabled: false
     judge_provider: openai
     judge_model: gpt-4o
     metrics: [faithfulness, answer_relevance, citation_precision]
-    # Judge runs are sampled to keep cost bounded; raise before a release.
+    # Judge runs are sampled to keep cost bounded (`--sample`). The sample size
+    # belongs next to any score quoted from it — a judged number without its n is
+    # an adjective. The runner's default is every case, because 17 < 50.
     sample_size: 50
-  # A run fails when any threshold below is missed. These are the numbers that
-  # turn "seems better" into a merge gate.
+  # Placeholders, read by nothing. A threshold becomes real when something
+  # computes the metric it names AND a baseline run has set its value; neither is
+  # true today. Lowering an armed threshold to make a build pass belongs in an
+  # ADR, not a commit.
   thresholds:
     recall_at_5: 0.80
     mrr: 0.65
     faithfulness: 0.90
-  # Fixed seed so two runs over the same dataset are comparable.
+  # Fixed seed so two sampled runs over the same dataset are comparable. The
+  # runner takes it as `--seed` and echoes it in the report.
   seed: 42
 
 # ---------------------------------------------------------------------------
