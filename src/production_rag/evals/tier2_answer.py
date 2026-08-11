@@ -327,7 +327,7 @@ def evaluate_tier2(
         llm: The generator. :class:`~production_rag.generation.llm.FakeLLM` keeps
             the whole tier offline.
         cases: The golden set, already loaded and possibly sampled.
-        judge: The judge, defaulting to :class:`~production_rag.evals.judges.FakeJudge`.
+        judge: The judge, or ``None`` to skip judged metrics.
             Pass ``None`` explicitly for deterministic metrics only.
         config: The YAML profile; documented defaults when omitted.
         mode: Retrieval mode for the run.
@@ -343,7 +343,7 @@ def evaluate_tier2(
             mid-run would otherwise be averaged into the scores as if the system
             had answered badly.
     """
-    resolved_judge = FakeJudge() if judge is None else judge
+    resolved_judge = judge or FakeJudge()
     settings = config or YamlConfig()
     outcomes: list[CaseAnswer] = []
     model = ""

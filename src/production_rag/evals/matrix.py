@@ -21,10 +21,12 @@ from production_rag.config import get_settings
 from production_rag.config_loader import load_yaml_config
 from production_rag.evals.costs import (
     MODEL_RATES_USD_PER_MILLION,
+    derive_call_counts,
     estimate_cost,
+    exact_token_count,
     require_spending_consent,
 )
-from production_rag.evals.judges import build_judge
+from production_rag.evals.provenance import assert_collection_embedder
 from production_rag.evals.scorecard import CONFIG_NAMES, validate_scorecard
 from production_rag.evals.source_hit import GoldenCase, load_golden
 from production_rag.evals.stats import (
@@ -39,7 +41,9 @@ from production_rag.evals.stats import (
 from production_rag.evals.tier1_retrieval import evaluate_tier1
 from production_rag.evals.tier2_answer import evaluate_tier2
 from production_rag.generation.llm import build_llm
+from production_rag.ingest.chunking import chunk_document
 from production_rag.ingest.cli import configure_cli_logging, resolve_embedder, resolve_store
+from production_rag.ingest.loaders import iter_documents
 from production_rag.ingest.pipeline import run_ingest
 from production_rag.retrieval.cli import resolve_searchable_store
 from production_rag.retrieval.hybrid import Retriever
@@ -62,7 +66,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--qdrant-url")
     parser.add_argument("--embedder", choices=("fake", "openai"), default="fake")
     parser.add_argument("--llm", choices=("fake", "openai"), default="fake")
-    parser.add_argument("--judge", choices=("fake", "openai"), default="fake")
+    parser.add_argument("--judge", choices=("none",), default="none")
+    parser.add_argument("--actual-cost-usd", type=float, default=0.0)
     parser.add_argument("--ingest", action="store_true", help="Ingest once before the sweep.")
     parser.add_argument("--yes-spend", action="store_true")
     parser.add_argument("--checkpoint", default="data/eval/reports/matrix-checkpoint.json")
@@ -76,15 +81,19 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def _dry_counts(corpus: str, config: Any, embedder: Any, collection: str) -> tuple[int, int]:
-    result = run_ingest(
-        source_dir=corpus,
-        config=config,
-        embedder=embedder,
-        collection=collection,
-        dry_run=True,
-    )
-    return result.documents_scanned, result.chunks_created
+def _corpus_profile(corpus: str, config: Any) -> tuple[int, list[str]]:
+    documents = 0
+    embed_texts: list[str] = []
+    for document in iter_documents(
+        corpus,
+        include_extensions=config.ingest.include_extensions,
+        exclude_globs=config.ingest.exclude_globs,
+    ):
+        chunks, _ = chunk_document(document, config.ingest.chunking)
+        if chunks:
+            documents += 1
+            embed_texts.extend(chunk.embed_text for chunk in chunks)
+    return documents, embed_texts
 
 
 def _print_estimate(estimate: Any) -> None:
@@ -92,9 +101,10 @@ def _print_estimate(estimate: Any) -> None:
     for model, rate in MODEL_RATES_USD_PER_MILLION.items():
         print(f"  {model}: ${rate:.4f}")
     print(
-        f"  chunks to embed={estimate.chunks_to_embed}; queries={estimate.queries}; "
-        f"generations={estimate.generations}; judge calls={estimate.judge_calls}; "
-        f"estimated total=${estimate.estimated_usd:.4f}"
+        f"  chunks to embed={estimate.calls.document_embeddings}; "
+        f"query embeddings={estimate.calls.query_embeddings}; "
+        f"generations={estimate.calls.generations}; judge calls={estimate.calls.judge_calls}; "
+        f"expected=${estimate.expected_usd:.4f}; upper bound=${estimate.upper_bound_usd:.4f}"
     )
 
 
@@ -120,6 +130,8 @@ def build_scorecard(
     golden_path: str,
     corpus_path: str,
     cost_usd: float,
+    cost_estimate_usd: float,
+    cost_expected_usd: float,
     billed: bool,
 ) -> dict[str, Any]:
     """Build schema v1 from retained per-item outcomes, never aggregates alone."""
@@ -153,7 +165,12 @@ def build_scorecard(
         for scope, indices in scopes.items():
             a = [bool(completed[name]["hit_vector"][index]) for index in indices]
             b = [bool(completed["sparse"]["hit_vector"][index]) for index in indices]
-            ci = paired_percentile_bootstrap(a, b)
+            ci = paired_percentile_bootstrap(
+                a,
+                b,
+                seed=int(checkpoint["bootstrap_seed"]),
+                resamples=int(checkpoint["bootstrap_resamples"]),
+            )
             mcnemar = exact_mcnemar(a, b)
             decision = reportability(len(indices), ci)
             comparisons.append(
@@ -185,7 +202,11 @@ def build_scorecard(
             "llm": checkpoint["llm"],
             "judge": checkpoint["judge"],
             "cost_usd": cost_usd,
+            "cost_estimate_usd": cost_estimate_usd,
+            "cost_expected_usd": cost_expected_usd,
             "billed": billed,
+            "bootstrap_seed": checkpoint["bootstrap_seed"],
+            "bootstrap_resamples": checkpoint["bootstrap_resamples"],
         },
         "configs": configs,
         "slices": slices,
@@ -202,18 +223,43 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_cli_logging(args.log_level or settings.log_level)
     config = load_yaml_config(args.config or settings.config_path)
     cases = load_golden(args.golden)
-    embedder = resolve_embedder(args.embedder, config=config, settings=settings)
-    documents, chunks = _dry_counts(args.corpus, config, embedder, args.collection)
-    billed = any(provider != "fake" for provider in (args.embedder, args.llm, args.judge))
+    documents, embed_texts = _corpus_profile(args.corpus, config)
+    chunks = len(embed_texts)
+    billed = any(provider != "fake" for provider in (args.embedder, args.llm))
+    calls = derive_call_counts(
+        items=len(cases),
+        configurations=CONFIGURATIONS,
+        chunks_to_embed=chunks,
+        ingest=args.ingest,
+        llm_provider=args.llm,
+        judge_provider="none",
+    )
+    embedding_tokens = (
+        exact_token_count(embed_texts, model=config.ingest.embedding.model)
+        if billed and args.ingest and args.embedder == "openai"
+        else 0
+    )
+    query_tokens = (
+        exact_token_count(
+            (case.question for case in cases for _ in range(6)),
+            model=config.ingest.embedding.model,
+        )
+        if billed and args.embedder == "openai"
+        else 0
+    )
     estimate = estimate_cost(
-        chunks_to_embed=chunks if args.ingest else 0,
-        queries=len(cases) * len(CONFIG_NAMES) * 2,
-        generations=len(cases) * len(CONFIG_NAMES),
-        judge_calls=len(cases) * len(CONFIG_NAMES),
+        calls=calls,
+        embedding_tokens=embedding_tokens,
+        query_tokens=query_tokens,
+        max_context_tokens=config.generation.max_context_tokens,
+        max_output_tokens=config.generation.max_output_tokens,
         billed=billed,
     )
     _print_estimate(estimate)
     require_spending_consent(billed=billed, yes_spend=args.yes_spend)
+    if billed != (args.actual_cost_usd > 0.0):
+        raise ValueError("billed runs require --actual-cost-usd > 0; free runs require 0")
+    embedder = resolve_embedder(args.embedder, config=config, settings=settings)
     url = args.qdrant_url or settings.qdrant_url
     if args.ingest:
         ingest_store = resolve_store(
@@ -239,7 +285,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "bootstrap_resamples": DEFAULT_BOOTSTRAP_RESAMPLES,
             "embedder": args.embedder,
             "llm": args.llm,
-            "judge": args.judge,
+            "judge": "none",
             "configs": {},
         }
     store = resolve_searchable_store(
@@ -250,7 +296,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         config=config.generation,
         api_key=settings.openai_api_key or os.environ.get(config.generation.api_key_env),
     )
-    judge = build_judge(args.judge, config=config.generation)
+    assert_collection_embedder(store, expected_model=embedder.model)
+    judge = None
     for name, (mode, rerank_kind) in CONFIGURATIONS.items():
         if name in checkpoint["configs"]:
             continue
@@ -289,7 +336,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         chunks=chunks,
         golden_path=args.golden.replace("\\", "/"),
         corpus_path=args.corpus.replace("\\", "/"),
-        cost_usd=estimate.estimated_usd,
+        cost_usd=args.actual_cost_usd,
+        cost_estimate_usd=estimate.upper_bound_usd,
+        cost_expected_usd=estimate.expected_usd,
         billed=billed,
     )
     _write_json(Path(args.report), scorecard)

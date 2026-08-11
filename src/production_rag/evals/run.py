@@ -46,6 +46,7 @@ from production_rag.evals.judges import (
     JudgeError,
     build_judge,
 )
+from production_rag.evals.provenance import assert_collection_embedder
 from production_rag.evals.source_hit import (
     DEFAULT_GOLDEN_PATH,
     DEFAULT_K,
@@ -336,7 +337,13 @@ def build_report(
 
 def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901 - a CLI's error paths
     """Run the requested tiers and return the process exit code."""
-    args = build_parser().parse_args(argv)
+    effective_argv = list(argv) if argv is not None else sys.argv[1:]
+    if "--matrix" in effective_argv:
+        from production_rag.evals.matrix import main as matrix_main
+
+        effective_argv.remove("--matrix")
+        return matrix_main(effective_argv)
+    args = build_parser().parse_args(effective_argv)
     settings = get_settings()
     configure_cli_logging(args.log_level or settings.log_level)
 
@@ -382,6 +389,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901 - a CLI's erro
         collection=collection,
         url=args.qdrant_url or settings.qdrant_url,
     )
+    try:
+        assert_collection_embedder(store, expected_model=embedder.model)
+    except CollectionMismatchError as exc:
+        return _fail(str(exc), type(exc).__name__, EXIT_USAGE)
 
     tier1: Tier1Report | None = None
     tier2: Tier2Report | None = None

@@ -12,6 +12,9 @@ nothing about retrieval or answer quality.
 
 Comparison: {{scorecard:comparison:hybrid:sparse:hit_at_5}}
 
+Bootstrap reproducibility: seed `{{scorecard:provenance:bootstrap_seed}}`,
+`{{scorecard:provenance:bootstrap_resamples}}` paired resamples.
+
 The next measurement action is to run the same scorecard contract with named real
 providers and replace the fixture artefact; until that artefact exists, this table remains
 an explicitly labelled plumbing check.

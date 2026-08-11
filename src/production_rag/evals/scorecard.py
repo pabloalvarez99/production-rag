@@ -29,9 +29,38 @@ def validate_scorecard(payload: Mapping[str, Any]) -> None:
     provenance = _mapping(payload["provenance"], "provenance")
     _keys(
         provenance,
-        {"commit", "corpus", "golden", "embedder", "llm", "judge", "cost_usd", "billed"},
+        {
+            "commit",
+            "corpus",
+            "golden",
+            "embedder",
+            "llm",
+            "judge",
+            "cost_usd",
+            "cost_estimate_usd",
+            "cost_expected_usd",
+            "billed",
+            "bootstrap_seed",
+            "bootstrap_resamples",
+        },
         "provenance",
     )
+    billed = provenance["billed"]
+    cost_usd = provenance["cost_usd"]
+    if not isinstance(billed, bool) or not isinstance(cost_usd, int | float):
+        raise ValueError("provenance billed/cost_usd types are invalid")
+    if billed != (float(cost_usd) > 0.0):
+        raise ValueError("billed is false iff actual cost_usd is 0.0")
+    if not isinstance(provenance["cost_estimate_usd"], int | float):
+        raise ValueError("cost_estimate_usd must be numeric")
+    if not isinstance(provenance["cost_expected_usd"], int | float):
+        raise ValueError("cost_expected_usd must be numeric")
+    if not isinstance(provenance["bootstrap_seed"], int):
+        raise ValueError("bootstrap seed must be a non-null integer")
+    if not isinstance(provenance["bootstrap_resamples"], int) or provenance[
+        "bootstrap_resamples"
+    ] <= 0:
+        raise ValueError("bootstrap resamples must be a positive integer")
     _keys(
         _mapping(provenance["corpus"], "provenance.corpus"),
         {"path", "documents", "chunks"},

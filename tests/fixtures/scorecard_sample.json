@@ -5,8 +5,9 @@
     "commit": "fixture0000000000000000000000000000000000",
     "corpus": {"path": "data/corpus", "documents": 3067, "chunks": 8003},
     "golden": {"path": "data/eval/golden-corpus.jsonl", "items": 60},
-    "embedder": "fake", "llm": "fake", "judge": "fake",
-    "cost_usd": 0.0, "billed": false
+    "embedder": "fake", "llm": "fake", "judge": "none",
+    "cost_usd": 0.0, "cost_estimate_usd": 0.0, "cost_expected_usd": 0.0, "billed": false,
+    "bootstrap_seed": 20260811, "bootstrap_resamples": 10000
   },
   "configs": {
     "sparse": {"hit_at_5": 0.55, "recall_at_5": 0.51, "mrr": 0.42, "ndcg_at_5": 0.47, "citation_precision": 0.65, "invalid_marker_rate": 0.05, "refusal_accuracy": 0.58},
