@@ -184,6 +184,15 @@ def _merge_pieces(pieces: list[str], chunk_size: int, chunk_overlap: int) -> lis
                 chunks.append(emitted)
             current = _overlap_tail(current, chunk_overlap)
             current_len = sum(len(part) for part in current)
+            # A recursively split piece may itself consume the whole budget.
+            # Overlap is optional repeated context, so trim it to the space
+            # left by that piece instead of letting overlap + piece exceed the
+            # configured hard bound.
+            available_overlap = chunk_size - len(piece)
+            if current_len > available_overlap:
+                overlap_text = "".join(current)
+                current = [overlap_text[-available_overlap:]] if available_overlap > 0 else []
+                current_len = available_overlap
         current.append(piece)
         current_len += len(piece)
 
@@ -198,8 +207,8 @@ def split_text(text: str, config: ChunkingConfig) -> list[str]:
 
     Operates on a single section body; heading segmentation happens in
     :func:`split_into_sections`. Returns chunks in document order, none longer
-    than ``config.chunk_size`` unless a single unbreakable run of characters
-    forces it.
+    than ``config.chunk_size``. A run with no useful separator is hard-cut to
+    preserve that provider-facing bound.
     """
     stripped = text.strip()
     if not stripped:
@@ -255,6 +264,24 @@ def chunk_document(document: Document, config: ChunkingConfig) -> tuple[list[Chu
     chunks: list[Chunk] = []
     dropped = 0
     index = 0
+
+    whole_text = document.text.strip()
+    if not whole_text:
+        return [], 0
+    if len(whole_text) < config.min_chunk_chars:
+        return [
+            Chunk.build(
+                document=document,
+                chunk_index=0,
+                text=whole_text,
+                embed_text=build_embed_text(
+                    whole_text,
+                    title=document.title,
+                    heading_path=(),
+                    prepend_heading_context=config.prepend_heading_context,
+                ),
+            )
+        ], 0
 
     for section in split_into_sections(document.text):
         for piece in split_text(section.body, config):

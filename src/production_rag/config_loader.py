@@ -49,6 +49,9 @@ class ChunkingConfig(_Section):
     Sizes are in **characters**, not tokens: character counts are free to
     compute, stable across tokenisers, and close enough at this granularity. The
     tokeniser-exact budget matters at generation time (M4), not here.
+    ``chunk_size`` is a hard ceiling including overlap; text without a useful
+    separator is cut to enforce it. ``min_chunk_chars`` applies only after a
+    longer document has been split, never to a short whole document.
     """
 
     strategy: str = "recursive"

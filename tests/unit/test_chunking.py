@@ -37,6 +37,12 @@ def test_long_text_is_split_within_the_size_limit() -> None:
     assert all(len(chunk) <= CONFIG.chunk_size for chunk in chunks)
 
 
+def test_text_exactly_at_the_ceiling_stays_in_one_chunk() -> None:
+    config = ChunkingConfig(chunk_size=80, chunk_overlap=20, min_chunk_chars=0)
+
+    assert split_text("x" * 80, config) == ["x" * 80]
+
+
 def test_split_preserves_every_word_in_order() -> None:
     # Overlap means text repeats, but nothing may be lost: a dropped sentence is
     # a document that can never be retrieved and nothing reports it.
@@ -113,15 +119,78 @@ def test_chunk_document_numbers_chunks_across_sections() -> None:
     assert {chunk.doc_id for chunk in chunks} == {document.doc_id}
 
 
-def test_chunk_document_reports_dropped_short_fragments() -> None:
+def test_document_shorter_than_floor_is_one_complete_chunk() -> None:
     document = Document(
         source_path="notes.md",
         text="## A\ntiny\n\n## B\nalso tiny\n",
         title="Notes",
     )
     chunks, dropped = chunk_document(document, ChunkingConfig(min_chunk_chars=120))
+    assert len(chunks) == 1
+    assert chunks[0].text == document.text.strip()
+    assert dropped == 0
+
+
+def test_empty_document_produces_no_chunks() -> None:
+    document = Document(source_path="empty.md", text=" \n\n ", title="Empty")
+
+    chunks, dropped = chunk_document(document, CONFIG)
+
+    assert chunks == []
+    assert dropped == 0
+
+
+def test_overlap_never_pushes_a_chunk_past_the_hard_ceiling() -> None:
+    config = ChunkingConfig(chunk_size=80, chunk_overlap=30, min_chunk_chars=0)
+    text = "a" * 75 + " " + "b" * 80
+
+    chunks = split_text(text, config)
+
+    assert max(map(len, chunks)) <= config.chunk_size
+
+
+def test_trimming_overlap_never_trims_the_new_source_piece() -> None:
+    config = ChunkingConfig(chunk_size=80, chunk_overlap=30, min_chunk_chars=0)
+
+    chunks = split_text("a" * 75 + " " + "b" * 80, config)
+
+    assert chunks[-1].endswith("b" * 80)
+
+
+def test_floor_still_drops_fragments_from_a_document_that_was_split() -> None:
+    document = Document(
+        source_path="fragments.md",
+        text="## A\n" + "a" * 50 + "\n\n## B\n" + "b" * 50,
+        title="Fragments",
+    )
+
+    chunks, dropped = chunk_document(
+        document,
+        ChunkingConfig(chunk_size=80, chunk_overlap=0, min_chunk_chars=60),
+    )
+
     assert chunks == []
     assert dropped == 2
+
+
+def test_long_code_fence_is_hard_cut_at_the_configured_ceiling() -> None:
+    config = ChunkingConfig(chunk_size=80, chunk_overlap=20, min_chunk_chars=0)
+    text = "```python\n" + "x" * 200 + "\n```"
+
+    chunks = split_text(text, config)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= config.chunk_size for chunk in chunks)
+    assert "x" * 200 in "".join(chunks)
+
+
+def test_heading_path_prefixing_survives_a_short_whole_document() -> None:
+    document = Document(source_path="short.md", text="## Detail\nBrief answer.", title="Guide")
+
+    chunks, _ = chunk_document(document, ChunkingConfig(min_chunk_chars=120))
+
+    assert chunks[0].text == document.text
+    assert chunks[0].embed_text == f"Guide\n\n{document.text}"
 
 
 def test_chunk_carries_its_heading_ancestry() -> None:
