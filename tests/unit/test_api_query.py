@@ -150,8 +150,7 @@ def test_query_defaults_are_forwarded_without_network(client: TestClient) -> Non
 
 @pytest.mark.parametrize("debug_requested", [False, True])
 def test_default_executor_composes_a1_run_query_without_network(
-    debug_requested: bool,
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    debug_requested: bool, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = SimpleNamespace(
         ingest=SimpleNamespace(embedding=SimpleNamespace(provider="openai")),
