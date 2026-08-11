@@ -196,6 +196,12 @@ class TestFakeLLM:
         prompt = build_prompt("q", [make_hit("empty", "   ", 1)])
         assert FakeLLM().complete(prompt.messages).text == ABSTAIN_TOKEN
 
+    def test_it_abstains_when_context_has_no_substantive_query_term(self) -> None:
+        prompt = build_prompt("Who won the Antarctic underwater chess championship?", HITS)
+        response = FakeLLM().complete(prompt.messages)
+        assert response.text == ABSTAIN_TOKEN
+        assert response.finish_reason == "abstain"
+
     def test_it_is_deterministic(self) -> None:
         prompt = build_prompt("what is fusion?", HITS)
         assert FakeLLM().complete(prompt.messages).text == FakeLLM().complete(prompt.messages).text

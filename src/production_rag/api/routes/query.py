@@ -101,7 +101,7 @@ def execute_query(
         else config.qdrant.collection
     )
     embedder = resolve_embedder(
-        embedder_kind or config.ingest.embedding.provider,
+        embedder_kind or payload.embedder,
         config=config,
         settings=settings,
     )

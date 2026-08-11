@@ -25,6 +25,7 @@ from tools.render_docs import (
 
 ROOT = Path(__file__).parents[1]
 FIXTURE = ROOT / "tests/fixtures/scorecard_sample.json"
+PUBLISHED_SCORECARD = ROOT / "data/eval/reports/scorecard.json"
 TEMPLATE = ROOT / "docs/_scorecard.md.in"
 README = ROOT / "README.md"
 KNOWN_METRICS = (
@@ -82,7 +83,7 @@ def test_every_repository_scorecard_token_resolves() -> None:
 
 
 def test_readme_rendered_region_is_current() -> None:
-    assert render_file(FIXTURE, TEMPLATE, README, check=True)
+    assert render_file(PUBLISHED_SCORECARD, TEMPLATE, README, check=True)
 
 
 def test_rendering_is_idempotent(tmp_path: Path) -> None:

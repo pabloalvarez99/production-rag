@@ -79,6 +79,7 @@ data/interim/
 data/eval/runs/
 data/eval/reports/*
 !data/eval/reports/.gitkeep
+!data/eval/reports/scorecard.json
 data/**/*.parquet
 !data/raw/sample/**
 

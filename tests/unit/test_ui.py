@@ -102,6 +102,7 @@ def test_grounded_answer_maps_markers_to_citations(client: TestClient) -> None:
     assert executor.payload is not None
     assert executor.payload.debug is True
     assert executor.payload.llm == "fake"
+    assert executor.payload.embedder == "fake"
 
 
 def test_refusal_is_not_rendered_as_error(client: TestClient) -> None:

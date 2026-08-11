@@ -21,7 +21,7 @@ fake embedder, and start the web server. They make no billed provider call.
    answer and its evidence together.
 2. Ask **“Why does hybrid search use reciprocal rank fusion?”** Show the grounded
    answer, citation links, source passages, and pipeline timings.
-3. Ask **“What is the capital city of the Moon?”** Show the explicit refusal and
+3. Ask **“Who won the Antarctic underwater chess championship?”** Show the explicit refusal and
    its reason.
 4. Stop recording after the refusal. The refusal reads as a deliberate product
    choice only after the grounded path has established that the system will

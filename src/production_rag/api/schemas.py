@@ -40,6 +40,12 @@ class QueryRequest(BaseModel):
         default="fake",
         description="Generation provider. 'fake' is deterministic offline plumbing only.",
     )
+    embedder: Literal["fake", "openai"] = Field(
+        default="fake",
+        description=(
+            "Query embedder. 'fake' is the credential-free default and must match ingestion."
+        ),
+    )
     debug: bool = Field(
         default=False,
         description="Ask the pipeline to collect diagnostics; never exposes credentials.",

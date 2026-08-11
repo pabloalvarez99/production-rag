@@ -9,8 +9,9 @@ needs a credential to run the pipeline end to end.
 * :class:`FakeLLM` — extractive, deterministic, offline. It reads the numbered
   context blocks back out of the prompt it was handed and answers with the
   leading sentence of each, carrying the matching ``[n]`` marker; with no blocks
-  it abstains. It is a **plumbing double, not a quality claim**: it does not
-  understand the question, it quotes the top passages. What it does guarantee is
+  it abstains. It also refuses when no substantive question term occurs in any
+  block. It is a **plumbing double, not a quality claim**: lexical overlap is
+  not understanding. What it does guarantee is
   that citation mapping, the guardrails and the graph are exercised by a real
   prompt and a real, marker-bearing answer.
 * :class:`OpenAILLM` — the real one. Model and temperature come from the YAML
@@ -33,6 +34,36 @@ import structlog
 
 from production_rag.config_loader import GenerationConfig
 from production_rag.generation.prompts import ABSTAIN_TOKEN, ChatMessage, parse_context_blocks
+
+_WORD = re.compile(r"[a-z0-9]+")
+_QUESTION_HEADER = "Question:"
+_QUESTION_STOPWORDS = frozenset(
+    {
+        "about",
+        "does",
+        "explain",
+        "from",
+        "have",
+        "into",
+        "that",
+        "the",
+        "this",
+        "what",
+        "when",
+        "where",
+        "which",
+        "with",
+        "why",
+    }
+)
+
+
+def _substantive_terms(text: str) -> set[str]:
+    return {
+        token
+        for token in _WORD.findall(text.lower())
+        if len(token) >= 4 and token not in _QUESTION_STOPWORDS
+    }
 
 _log = structlog.get_logger(__name__)
 
@@ -126,6 +157,12 @@ class FakeLLM:
         )
         blocks = parse_context_blocks(user)
         if not blocks:
+            return LLMResponse(text=ABSTAIN_TOKEN, model=self._model, finish_reason="abstain")
+
+        question = user.rsplit(_QUESTION_HEADER, 1)[-1]
+        question_terms = _substantive_terms(question)
+        context_terms = _substantive_terms(" ".join(body for _, body in blocks))
+        if question_terms and question_terms.isdisjoint(context_terms):
             return LLMResponse(text=ABSTAIN_TOKEN, model=self._model, finish_reason="abstain")
 
         sentences = [

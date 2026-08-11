@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TOKEN = re.compile(r"\{\{scorecard:([^{}]+)}}")
 START = "<!-- SCORECARD:START -->"
 END = "<!-- SCORECARD:END -->"
-DEFAULT_SCORECARD = ROOT / "tests/fixtures/scorecard_sample.json"
+DEFAULT_SCORECARD = ROOT / "data/eval/reports/scorecard.json"
 DEFAULT_TEMPLATE = ROOT / "docs/_scorecard.md.in"
 DEFAULT_OUTPUT = ROOT / "README.md"
 

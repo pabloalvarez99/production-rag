@@ -24,12 +24,12 @@ nothing about retrieval or answer quality.
 
 | Configuration | `hit_at_5` |
 | --- | --- |
-| Sparse | **0.550**<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=fake; n=60; date=2026-08-11; commit=fixture00000</sub> |
-| Dense | **0.500**<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=fake; n=60; date=2026-08-11; commit=fixture00000</sub> |
-| Hybrid | **0.630**<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=fake; n=60; date=2026-08-11; commit=fixture00000</sub> |
-| Hybrid + rerank | **0.650**<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=fake; n=60; date=2026-08-11; commit=fixture00000</sub> |
+| Sparse | **0.820**<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=fake; n=60; date=2026-08-11; commit=79ef17b0883b</sub> |
+| Dense | **0.080**<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=fake; n=60; date=2026-08-11; commit=79ef17b0883b</sub> |
+| Hybrid | **0.680**<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=fake; n=60; date=2026-08-11; commit=79ef17b0883b</sub> |
+| Hybrid + rerank | **0.740**<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=fake; n=60; date=2026-08-11; commit=79ef17b0883b</sub> |
 
-Comparison: **Directional only:** hybrid - sparse = +0.080 (95% CI -0.040 to +0.200; n=60); **not reportable** — the confidence interval crosses zero.<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=fake; n=60; date=2026-08-11; commit=fixture00000</sub>
+Comparison: **hybrid - sparse = -0.117** (95% CI -0.200 to -0.050; n=60).<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=fake; n=60; date=2026-08-11; commit=79ef17b0883b</sub>
 
 The next measurement action is to run the same scorecard contract with named real
 providers and replace the fixture artefact; until that artefact exists, this table remains
