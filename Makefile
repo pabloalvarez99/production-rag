@@ -19,17 +19,19 @@ INGEST      := python -m production_rag.ingest --config $(CONFIG_FILE)
 RETRIEVE    := python -m production_rag.retrieve --config $(CONFIG_FILE)
 EVAL_HIT    := python -m production_rag.evals.source_hit --config $(CONFIG_FILE)
 ABLATION    := python -m production_rag.evals.ablation --config $(CONFIG_FILE)
+ANSWER      := python -m production_rag.query
 
 # Retrieval knobs (M2). QUERY has no sensible default: retrieve-fake without one
 # would silently score a question nobody asked.
 QUERY ?=
 MODE  ?= hybrid
 TOPK  ?=
+QUESTION ?=
 
 .DEFAULT_GOAL := help
 .PHONY: help build up down restart logs ps health health-ready ingest-fake ingest-sample \
         ingest-dry reingest-fake retrieve-fake retrieve-sample eval-hit-fake eval-hit-sample \
-        eval-ablation-fake \
+        eval-ablation-fake query-fake \
         test test-host shell-api shell-qdrant clean
 
 help: ## Show this help
@@ -127,6 +129,17 @@ eval-hit-sample: ## Score hit@k with real embeddings (needs OPENAI_API_KEY; cost
 
 eval-ablation-fake: ## Compare dense/sparse/hybrid/hybrid+rerank(fake) offline
 	$(COMPOSE) run --rm $(API) $(ABLATION) --embedder fake
+
+# ---------------------------------------------------------------------------
+# Query (M4). Fake generation is deterministic offline plumbing; it validates
+# the answer/citation/refusal contract and makes no quality claim.
+#   make query-fake QUESTION="why use reciprocal rank fusion"
+# ---------------------------------------------------------------------------
+
+query-fake: ## Answer with fake embedder + LLM. QUESTION="..." [MODE=] (no keys)
+	@test -n '$(QUESTION)' || { echo 'usage: make query-fake QUESTION="your question"'; exit 2; }
+	$(COMPOSE) run --rm $(API) $(ANSWER) --question '$(QUESTION)' --embedder fake \
+		--llm fake --mode $(MODE)
 
 # tests/ is excluded from the image (see .dockerignore) so it is mounted here.
 # Requires the dev extra to be part of the installed dependency set; if pytest

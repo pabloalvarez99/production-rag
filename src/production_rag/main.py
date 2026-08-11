@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from structlog.typing import Processor
 
 from production_rag.api.middleware import RequestContextMiddleware
-from production_rag.api.routes import health, ready
+from production_rag.api.routes import health, query, ready
 from production_rag.config import Settings, get_settings
 
 API_DESCRIPTION = """
@@ -98,6 +98,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.unversioned_router)
     app.include_router(health.router, prefix=resolved.api_prefix)
     app.include_router(ready.router, prefix=resolved.api_prefix)
+    app.include_router(query.router, prefix=resolved.api_prefix)
 
     structlog.get_logger(__name__).info(
         "app_created",

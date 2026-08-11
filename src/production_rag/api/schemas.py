@@ -1,4 +1,4 @@
-"""Response models for the operational endpoints.
+"""Public request and response models for the HTTP API.
 
 Every route declares an explicit response model. Two reasons, both of which
 matter more as the API grows: the OpenAPI document stays accurate for free, and
@@ -11,6 +11,73 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class QueryRequest(BaseModel):
+    """One grounded-answer request.
+
+    Unknown fields are rejected so a misspelled control never silently falls
+    back to a default. Whitespace-only questions are rejected by Pydantic after
+    global string stripping, before the query pipeline or a provider is called.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    question: str = Field(
+        min_length=1,
+        max_length=8_000,
+        description="Natural-language question to answer from indexed evidence.",
+    )
+    mode: Literal["dense", "sparse", "hybrid"] | None = Field(
+        default=None,
+        description="Retrieval mode override; omitted uses the configured default.",
+    )
+    rerank: Literal["off", "auto", "fake", "local", "cohere"] | None = Field(
+        default=None,
+        description="Reranker override; omitted uses the query pipeline default.",
+    )
+    llm: Literal["fake", "openai"] = Field(
+        default="fake",
+        description="Generation provider. 'fake' is deterministic offline plumbing only.",
+    )
+    debug: bool = Field(
+        default=False,
+        description="Ask the pipeline to collect diagnostics; never exposes credentials.",
+    )
+
+
+class CitationOut(BaseModel):
+    """A resolved answer marker pointing to one retrieved chunk."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    marker: int = Field(ge=1, description="One-based marker ordinal used in the answer.")
+    chunk_id: str = Field(description="Stable identifier of the supporting chunk.")
+    source_path: str = Field(description="Corpus-relative source path.")
+    text: str = Field(description="Supporting passage exactly as it was shown to the model.")
+    rank: int = Field(ge=1, description="Position of the passage in the retrieved ranking.")
+    title: str | None = Field(default=None, description="Source document title, when known.")
+    heading_path: str | None = Field(
+        default=None,
+        description="Heading ancestry within the source document, when known.",
+    )
+
+
+class QueryResponse(BaseModel):
+    """Grounded answer or an explicit refusal."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    answer: str = Field(description="Answer text with inline citation markers, or refusal text.")
+    citations: list[CitationOut] = Field(
+        default_factory=list,
+        description="Resolved evidence referenced by the answer.",
+    )
+    refused: bool = Field(description="Whether the evidence guardrail declined to answer.")
+    refusal_reason: str | None = Field(
+        default=None,
+        description="Machine-readable refusal explanation; null for grounded answers.",
+    )
 
 
 class HealthResponse(BaseModel):
