@@ -13,6 +13,7 @@
 `data/raw/sample/` contains nine documents. It is useful as a deterministic
 offline fixture, but it cannot support a discriminating source-level retrieval
 score. A retriever returning five distinct random sources from nine has a
+<!-- provenance-allow: historical-measurement: random-baseline calculation recorded when ADR-0008 was accepted -->
 `5 / 9`, or approximately **56%**, chance of including the labelled source.
 `hit@5` therefore starts more than halfway to perfect before the retriever has
 used the query at all. Hybrid, sparse, and dense runs have too little headroom
@@ -33,7 +34,8 @@ pair it with `data/eval/golden-corpus.jsonl`.
 The corpus scores against the selection criteria as follows:
 
 1. **Document count:** 3,067 Markdown documents, far above the binding minimum
-   of 100. A random five-source result covers about 0.16% of this corpus.
+<!-- provenance-allow: historical-measurement: corpus-scale random baseline recorded when ADR-0008 was accepted -->
+of 100. A random five-source result covers about 0.16% of this corpus.
 2. **Internal redundancy:** concepts such as payloads, filters, collections,
    quantization, hybrid search, and deployment recur naturally in reference,
    tutorial, cloud, operations, and troubleshooting pages.

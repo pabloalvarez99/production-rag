@@ -55,6 +55,15 @@ jobs:
           docker compose logs qdrant
           exit 1
 
+      - name: Fail on Qdrant client/server version drift
+        run: |
+          server_version=$(curl --fail --silent http://localhost:6333/ | python -c 'import json, sys; print(json.load(sys.stdin)["version"])')
+          client_version=$(python -c 'from importlib.metadata import version; print(version("qdrant-client"))')
+          test "$client_version" = "$server_version" || {
+            echo "Qdrant version mismatch: client=$client_version server=$server_version" >&2
+            exit 1
+          }
+
       - name: Seed the deterministic evaluation collection
         run: >-
           python -m production_rag.ingest
@@ -79,6 +88,26 @@ jobs:
           OPENAI_API_KEY: ""
           COHERE_API_KEY: ""
           QDRANT_API_KEY: ""
+
+      - name: Prove the credential-free HTTP query path
+        env:
+          OPENAI_API_KEY: ""
+          COHERE_API_KEY: ""
+          QDRANT_API_KEY: ""
+        run: |
+          python -m uvicorn production_rag.main:app --host 127.0.0.1 --port 8000 > api.log 2>&1 &
+          api_pid=$!
+          trap 'kill "$api_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8000/health > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          response=$(curl --fail --silent http://127.0.0.1:8000/v1/query \
+            -H 'content-type: application/json' \
+            -d '{"question":"how does reciprocal rank fusion work","llm":"fake"}')
+          RESPONSE="$response" python -c 'import json, os; payload=json.loads(os.environ["RESPONSE"]); assert payload["answer"]; assert payload["citations"]'
 
       - name: Show vector-store logs after a failure
         if: failure()

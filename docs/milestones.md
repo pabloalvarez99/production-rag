@@ -497,6 +497,7 @@ exactly the structured artifacts an answer metric consumes (`citations[]` with
 `chunk_id`, `refused`, `refusal_reason`, and — on the library result —
 `invalid_markers` and `uncited_claims`), so the harness will read fields rather
 than parse prose. "Every claim is citable" is a property of the
+<!-- provenance-allow: explanatory-example: hypothetical score distinguishes implementation from measurement -->
 design; "94% of claims are faithful" is a measurement, and none has been taken.
 
 Details: [ADR 0005](adr/0005-grounded-generation.md) for grounded generation

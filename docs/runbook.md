@@ -4,6 +4,10 @@ Operational procedures for the local stack. Everything goes through
 `docker compose` (or the `Makefile` / `scripts/*.ps1` wrappers, which are
 thin shims over the same commands).
 
+`make` is optional. On Windows, use the documented PowerShell wrappers or the
+expanded `docker compose` commands; every reviewer-facing path has a make-free
+equivalent.
+
 ## Start the stack
 
 ```bash
@@ -22,6 +26,15 @@ python scripts/smoke_health.py
 
 Expected: both probes return 2xx. The Qdrant dashboard is at
 http://localhost:6333/dashboard, API docs at http://localhost:8000/docs.
+
+The Python client and server image are pinned to the same release. At startup,
+verify the contract and fail before ingest if they drift:
+
+```bash
+server_version=$(curl --fail --silent http://localhost:6333/ | python -c 'import json, sys; print(json.load(sys.stdin)["version"])')
+client_version=$(python -c 'from importlib.metadata import version; print(version("qdrant-client"))')
+test "$client_version" = "$server_version"
+```
 
 Liveness is the default probe because it is the only surface that must answer
 with no dependency up — a failure there means the process is wrong, not the

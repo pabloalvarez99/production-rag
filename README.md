@@ -85,9 +85,12 @@ Four decisions define the system:
 
 See [architecture](docs/architecture.md) for the component and failure-path detail.
 
-## Run it in 2 minutes, $0, no credentials
+## Run it offline, $0, no credentials
 
 Requires Python 3.12+. The first runnable path uses deterministic local fakes, makes no billed provider calls, and needs no credential.
+
+<!-- provenance-allow: historical-measurement: measured Windows cold start from a clean checkout, retained with its environment -->
+A clean Windows cold start was measured at 4.8 minutes, including dependency installation, image startup, ingest, and the first query. Warm starts are shorter; this is the reviewer-facing clone-to-answer measurement.
 
 ```bash
 python -m venv .venv
@@ -107,9 +110,12 @@ The complete offline evaluation path uses local Qdrant through Compose:
 
 ```bash
 docker compose up -d --build
-make reingest-fake
-make eval-all-fake
+docker compose run --rm api python -m production_rag.ingest --source data/raw --embedder fake --recreate-collection
+docker compose run --rm api python -m production_rag.evals.run --tier all --embedder fake --llm fake
 ```
+
+`make reingest-fake` and `make eval-all-fake` are optional shortcuts for those
+two commands. Windows users do not need to install `make`.
 
 Those results validate data flow and contracts, not retrieval or answer quality. See the [runbook](docs/runbook.md) for Docker and operational commands.
 
@@ -124,7 +130,6 @@ Those results validate data flow and contracts, not retrieval or answer quality.
 | Health, readiness, request IDs, structured logs | **LIVE** | `/health`, `/v1/ready`, middleware and safe diagnostics |
 | Optional tracing seam | **LIVE** | Null tracer by default; Langfuse is opt-in |
 | Two-tier evaluation and explicit retrieval gate flag | **LIVE** | `production_rag.evals.run`; `--fail-under-hit` defaults to reporting only |
-| Retrieval payload filter configuration | **DECLARED** | Config shape exists; query wiring does not |
 | Metrics export endpoint | **DECLARED** | Config shape exists; no `/metrics` route |
 | Auth, rate limits, production retry policy | **OUT** | Hardening is planned, not represented as live |
 | User interface | **OUT** | API and CLI only |
@@ -183,7 +188,7 @@ Commit prefixes such as `feat(m4-a1)` and `feat(m5-a3)` preserve the wave and se
 | Next | Outcome |
 | --- | --- |
 | Wave 8 scorecard | Run retrieval and answer evaluation with named real providers, a calibrated judge, stated `n`, and a dated report |
-| Hardening | Wire filters, add auth and rate limits, define retries/timeouts, and expose production metrics |
+| Hardening | Add auth and rate limits, define retries/timeouts, and expose production metrics |
 | Portfolio demo | Record the honest end-to-end GIF and publish the architecture/scorecard artifacts |
 | UI, if justified | Add a client only after the API behaviour and measurements are stable |
 

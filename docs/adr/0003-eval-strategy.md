@@ -52,8 +52,9 @@ and has no armed gate.
 
 Supporting decisions:
 
+<!-- provenance-allow: historical-measurement: target mix fixed when ADR-0003 was accepted, not a current result -->
 - **The dataset is stratified**, not just collected: 40% paraphrase, 25% exact
-  token, 20% multi-hop, 15% unanswerable. The unanswerable slice is mandatory —
+token, 20% multi-hop, 15% unanswerable. The unanswerable slice is mandatory —
   it is the only measurement of whether the system hallucinates under pressure,
   and a system that never refuses scores perfectly without it.
 - **Fixed seed (42)** and versioned dataset, so two runs are comparable.
@@ -102,6 +103,7 @@ runner (`python -m production_rag.evals.run`). Where the implementation departs
 from the Decision above, it is recorded here rather than discovered later by
 someone who trusted that section:
 
+<!-- provenance-allow: historical-measurement: milestone implementation record preserved with ADR-0003 -->
 | Decided above | What M6 actually landed |
 |---|---|
 | Tier 1 metrics `recall@k`, `mrr`, `ndcg@k` over `relevant_chunk_ids` | **the same arithmetic over `expected_source_paths`** — `source_hit_at_k`, `source_recall_at_k`, `mrr`, `ndcg_at_k` in `evals.tier1_retrieval`. Document granularity, and the names say `source_` for that reason. `ndcg` uses binary gain: the graded `relevance` field is on no item |

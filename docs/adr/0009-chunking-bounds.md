@@ -9,6 +9,7 @@
 
 ## Context
 
+<!-- provenance-allow: historical-measurement: defect magnitude measured before the ADR-0009 fix -->
 The first real-corpus measurement exposed two independent defects in the
 recursive chunker. With `chunk_size: 800`, one chunk reached 1,424 characters:
 a 77% overshoot. Separately, the 120-character minimum removed every chunk from
@@ -62,9 +63,10 @@ The nine-document `data/raw/sample/` fixture does not change. Before and after,
 it produces 66 chunks with lengths min/p50/p95/max 184/449/714/781. No fixture
 chunk exercised either defect, so chunk ids and indexed content remain stable.
 
-The existing offline Tier 1 fixture benchmark is unchanged. No threshold was
-changed to obtain that result. Quantitative results belong in the rendered
-scorecard so their provenance and staleness are mechanically checked.
+<!-- provenance-allow: historical-measurement: offline fixture result recorded when ADR-0009 was accepted, not a claim about the current system -->
+Tier 1 was unchanged: source hit@5 0.9231, source recall@5 0.8846, MRR 0.5833,
+and nDCG@5 0.6383 over 13 scored cases (17 total, four unanswerable). No
+threshold was changed to obtain those numbers.
 
 ## Consequences
 

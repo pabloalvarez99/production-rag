@@ -8,6 +8,7 @@
 
 ## Context
 
+<!-- provenance-allow: explanatory-example: power example used to motivate ADR-0010 reporting rules -->
 The evaluation set has 60 items in six deliberately different slices, ten items
 per slice. That is enough to expose failure modes and far too little to turn a
 slice delta into a finding. At `n=10`, the approximate 95% interval on a
@@ -37,6 +38,7 @@ The p-value is the exact binomial tail rather than the chi-square approximation,
 because this golden set will commonly produce fewer than 25 discordant pairs —
 the range where the approximation is least defensible.
 
+<!-- provenance-allow: explanatory-example: statistical power target defined by ADR-0010, not a measured result -->
 Every slice also reports an 80%-power minimum detectable effect from a seeded
 simulation. It converts “we need more labels” into a quantitative label-planning
 decision. It does not rescue an underpowered result after seeing its direction.

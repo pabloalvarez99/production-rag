@@ -50,7 +50,12 @@ CLAIMS = (
         r"\b(?:generation|config)\.stream\b",
         ("production_rag/config_loader.py",),
     ),
-    Claim("retrieval filters", r"(?:payload\s+)?filters?", r"\ballowed_fields\b"),
+    Claim(
+        "retrieval filters",
+        r"(?:payload\s+)?filters?",
+        r"\ballowed_fields\b",
+        ("production_rag/config_loader.py",),
+    ),
     Claim(
         "/metrics",
         r"/metrics",
@@ -60,10 +65,11 @@ CLAIMS = (
 )
 
 
-def test_absent_features_are_only_mentioned_honestly() -> None:
-    readme_lines = README.read_text(encoding="utf-8").splitlines()
+def absent_feature_failures(
+    readme_lines: list[str], claims: tuple[Claim, ...] = CLAIMS
+) -> list[str]:
     failures: list[str] = []
-    for claim in CLAIMS:
+    for claim in claims:
         if claim.exists:
             continue
         for number, line in enumerate(readme_lines, start=1):
@@ -71,4 +77,32 @@ def test_absent_features_are_only_mentioned_honestly() -> None:
                 line
             ):
                 failures.append(f"{claim.name} at README.md:{number}: {line.strip()}")
+    return failures
+
+
+def test_absent_features_are_only_mentioned_honestly() -> None:
+    readme_lines = README.read_text(encoding="utf-8").splitlines()
+    failures = absent_feature_failures(readme_lines)
     assert not failures, "Absent features need an honesty marker:\n" + "\n".join(failures)
+
+
+def test_closing_claim_predicates_match_the_implemented_surface() -> None:
+    """Mutation baseline: none of these five optional surfaces is implemented."""
+    assert {claim.name: claim.exists for claim in CLAIMS} == {
+        "LlamaIndex": False,
+        "Ragas": False,
+        "streaming": False,
+        "retrieval filters": False,
+        "/metrics": False,
+    }
+
+
+def test_metrics_claim_fails_if_its_honesty_markers_are_removed() -> None:
+    line = next(
+        line for line in README.read_text(encoding="utf-8").splitlines() if "/metrics" in line
+    )
+    mutated = line.replace("**DECLARED**", "**LIVE**").replace(
+        "no `/metrics` route", "`/metrics` route"
+    )
+    metrics_claim = next(claim for claim in CLAIMS if claim.name == "/metrics")
+    assert absent_feature_failures([mutated], (metrics_claim,))

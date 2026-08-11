@@ -20,6 +20,7 @@ plan. The ADR is **Accepted** as of this milestone, and the two-tier split is
 now the way this repository measures itself. What M6 does *not* do is arm a merge
 gate, and the rest of this section is the honest accounting of why.
 
+<!-- provenance-allow: historical-measurement: milestone inventory retained to explain the evaluation design -->
 | Piece | State |
 |---|---|
 | `data/eval/golden.jsonl` | **committed** — 17-item seed set, document-level labels, explicit `answerable`, 4-item `unanswerable` slice |
@@ -161,6 +162,7 @@ finding and the mean is a summary of it:
 | unanswerable (4 items) | correct | **hallucination under pressure** — the defect the slice exists to catch, listed in `refusal_failures` |
 | answerable (13 items) | over-refusal; check `refusal_reason` | expected |
 
+<!-- provenance-allow: explanatory-example: slice sensitivity example explains why the metric is directional -->
 So `refusal_accuracy` is scored but not quotable: one flip in the top row is 25
 points of that row. Read `refusal_failures` — it names the cases — before reading
 the percentage.
@@ -220,6 +222,7 @@ thing M2 was built for — and it is meaningful even on a `fake` collection.
 ## Pre- and post-rerank `hit@k`
 
 Reranking is the first change in this project whose value is a *delta*, not a
+<!-- provenance-allow: explanatory-example: invented values demonstrate why paired context is required -->
 level. "Post-rerank `hit@3` is 0.71" says nothing on its own; "it was 0.57 before
 the stage and 0.71 after, same corpus, same embedder, same run" is a finding.
 
@@ -387,6 +390,7 @@ scores:
 | `golden_cases` / `scored_cases` / `sample` / `seed` | 17 items; a sampled run says which and how it chose |
 | `gate` | present only when `--fail-under-hit` was raised above zero; carries `metric`, `threshold`, `value`, `passed` |
 
+<!-- provenance-allow: explanatory-example: synthetic multi-source case demonstrates hit versus recall semantics -->
 **Tier 1** reports `source_hit_at_k`, `source_recall_at_k`, `mrr` and
 `ndcg_at_k`, plus `by_category`. Two of those are separate for a reason: a
 multi-source item such as `q-0008`, whose answer spans two documents, scores
@@ -484,6 +488,7 @@ gate — see [Status after M6](#status-after-m6).
 
 Composition targets:
 
+<!-- provenance-allow: historical-measurement: target slice mix defined by the accepted evaluation design -->
 | Slice | Share | Why it exists |
 |---|---|---|
 | Paraphrase / conceptual | 40% | the case dense retrieval is supposed to win |
@@ -552,6 +557,7 @@ These two are the pair most likely to be confused, because both are free, both
 are about markers, and both come back from the same tier-2 run. They differ on
 **which markers they look at**:
 
+<!-- provenance-allow: explanatory-example: metric-semantics table contains no measured score -->
 | | `invalid_marker_rate` | `citation_precision` |
 |---|---|---|
 | Looks at | markers the model emitted that resolve to **nothing** | citations that **did** resolve to a chunk |
@@ -562,7 +568,7 @@ are about markers, and both come back from the same tier-2 run. They differ on
 They are disjoint by construction: a marker cannot be both unresolvable and
 wrongly-sourced. So neither substitutes for the other —
 
-<!-- provenance-allow: explanatory counterexample; zero invalid markers does not prove citation support -->
+<!-- provenance-allow: explanatory-example: zero invalid markers does not prove citation support -->
 - `invalid_marker_rate: 0.0` on every item is compatible with every citation
   pointing at a real chunk from the wrong document. Every marker resolved; none
   of them was right.
@@ -585,6 +591,7 @@ and never write it in a sentence containing the words "citation quality".
 There are two unrelated things called a threshold in this repository, and
 conflating them is how a project ends up believing it has a gate:
 
+<!-- provenance-allow: historical-measurement: implementation-state comparison retained for reproducibility -->
 | | `evals.thresholds` in `configs/default.yaml` | `--fail-under-hit` |
 |---|---|---|
 | Read by | **nothing** | `production_rag.evals.run` |
@@ -628,6 +635,7 @@ runs over the same dataset comparable.
 
 ## Interpreting a regression
 
+<!-- provenance-allow: explanatory-example: troubleshooting values are diagnostic examples, not published measurements -->
 | Symptom | Likely cause | Where to look |
 |---|---|---|
 | `hit@k` is exactly `0.00` at every k | labels and payload paths disagree | the ingest `SOURCE` root — see [labels match on `source_path`](#labels-match-on-source_path-exactly) |

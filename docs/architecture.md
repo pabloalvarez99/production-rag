@@ -838,6 +838,7 @@ after it.
 
 `configs/default.yaml` is deliberately broader than what the code consumes.
 
+<!-- provenance-allow: historical-measurement: milestone-state table retained as architecture history -->
 | Config block | State after M6 |
 |---|---|
 | `ingest` (walk, chunking, embedding, incremental) | live |
@@ -862,6 +863,7 @@ A key existing in that file is not a claim that the runtime reads it.
 
 ### Ingest failure behaviour
 
+<!-- provenance-allow: explanatory-example: failure-policy table uses metric aliases as examples, not measured results -->
 | Failure | Behaviour | Rationale |
 |---|---|---|
 | Collection exists without the `sparse` named vector (an M1 collection) | abort, telling the operator to re-run with `--recreate-collection` | writing dense-only points into a collection the retriever expects to be hybrid produces a silent recall hole |
@@ -873,6 +875,7 @@ A key existing in that file is not a claim that the runtime reads it.
 
 ### Retrieval failure behaviour (M2 + M3)
 
+<!-- provenance-allow: explanatory-example: retrieval failure-policy table contains thresholds and status-code examples, not measurements -->
 | Failure | Behaviour | Rationale |
 |---|---|---|
 | Collection has no `sparse` named vector | abort with the recreate instruction | see [migration](#migration-m2-needs-a-collection-rebuild); degrading to dense-only silently would be worse |
@@ -1111,6 +1114,7 @@ drives HTTP would measure serialization, and one that reimplements the pipeline
 would measure the reimplementation — and the divergence would show up as a
 passing eval over a broken service.
 
+<!-- provenance-allow: historical-measurement: milestone evaluation topology retained as architecture history -->
 ```
 data/eval/golden.jsonl                     configs/default.yaml
   17 items, document-level labels            evals.dataset_path (default only)
