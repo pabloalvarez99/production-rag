@@ -31,7 +31,7 @@ QUESTION ?=
 .DEFAULT_GOAL := help
 .PHONY: help build up down restart logs ps health health-ready ingest-fake ingest-sample \
         ingest-dry reingest-fake retrieve-fake retrieve-sample eval-hit-fake eval-hit-sample \
-        eval-ablation-fake query-fake \
+        eval-ablation-fake query-fake query-debug-fake \
         test test-host shell-api shell-qdrant clean
 
 help: ## Show this help
@@ -140,6 +140,11 @@ query-fake: ## Answer with fake embedder + LLM. QUESTION="..." [MODE=] (no keys)
 	@test -n '$(QUESTION)' || { echo 'usage: make query-fake QUESTION="your question"'; exit 2; }
 	$(COMPOSE) run --rm $(API) $(ANSWER) --question '$(QUESTION)' --embedder fake \
 		--llm fake --mode $(MODE)
+
+query-debug-fake: ## Answer offline and include safe timings. QUESTION="..." [MODE=]
+	@test -n '$(QUESTION)' || { echo 'usage: make query-debug-fake QUESTION="your question"'; exit 2; }
+	$(COMPOSE) run --rm $(API) $(ANSWER) --question '$(QUESTION)' --embedder fake \
+		--llm fake --mode $(MODE) --debug
 
 # tests/ is excluded from the image (see .dockerignore) so it is mounted here.
 # Requires the dev extra to be part of the installed dependency set; if pytest

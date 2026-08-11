@@ -72,7 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Collect pipeline diagnostics; the stable JSON response remains unchanged.",
+        help="Include safe pipeline diagnostics in the JSON response.",
     )
     parser.add_argument(
         "--log-level",
@@ -127,7 +127,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         # context. The exception type is sufficient for automation and logs.
         return _fail("query failed", type(exc).__name__, EXIT_RUNTIME)
 
-    _emit({"ok": True, **result.model_dump(mode="json")})
+    response_payload = result.model_dump(mode="json")
+    if result.debug is None:
+        response_payload.pop("debug", None)
+    _emit({"ok": True, **response_payload})
     return EXIT_OK
 
 

@@ -12,13 +12,14 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from importlib import import_module
+from inspect import signature
 from typing import Annotated, Any, Protocol, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from production_rag.api.deps import SettingsDep
 from production_rag.api.middleware import get_request_id
-from production_rag.api.schemas import QueryRequest, QueryResponse
+from production_rag.api.schemas import QueryDebug, QueryRequest, QueryResponse
 from production_rag.config import Settings
 from production_rag.config_loader import load_yaml_config
 from production_rag.ingest.cli import resolve_embedder
@@ -65,6 +66,23 @@ router = APIRouter(tags=["query"])
 """Versioned router; mounted under ``Settings.api_prefix``."""
 
 
+def _accepts_request_id(query_callable: Callable[..., Any]) -> bool:
+    """Return whether an A1 entrypoint accepts ``request_id`` as a keyword."""
+    try:
+        signature(query_callable).bind_partial("question", request_id="request-id")
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _project_debug(result: Any) -> QueryDebug:
+    """Project internal results onto the deliberately small public allowlist."""
+    return QueryDebug(
+        timings_ms=dict(getattr(result, "timings_ms", None) or {}),
+        invalid_markers=list(getattr(result, "invalid_markers", ()) or ()),
+    )
+
+
 def execute_query(
     payload: QueryRequest,
     *,
@@ -104,15 +122,21 @@ def execute_query(
         api_key=settings.openai_api_key or os.environ.get(config.generation.api_key_env),
     )
     retriever = Retriever.from_config(store=store, embedder=embedder, config=config)
-    result = _run_query(
-        payload.question,
-        retriever=retriever,
-        llm=llm,
-        config=config,
-        mode=payload.mode,
-        reranker=reranker,
-    )
-    return QueryResponse.model_validate(result, from_attributes=True)
+    query_kwargs: dict[str, Any] = {
+        "retriever": retriever,
+        "llm": llm,
+        "config": config,
+        "mode": payload.mode,
+        "reranker": reranker,
+    }
+    if _accepts_request_id(_run_query):
+        query_kwargs["request_id"] = request_id
+
+    result = _run_query(payload.question, **query_kwargs)
+    response = QueryResponse.model_validate(result, from_attributes=True)
+    if payload.debug:
+        return response.model_copy(update={"debug": _project_debug(result)})
+    return response
 
 
 def get_query_executor() -> QueryExecutor:
@@ -127,6 +151,7 @@ QueryExecutorDep = Annotated[QueryExecutor, Depends(get_query_executor)]
 @router.post(
     "/query",
     response_model=QueryResponse,
+    response_model_exclude_unset=True,
     status_code=status.HTTP_200_OK,
     responses={
         status.HTTP_200_OK: {"description": "Grounded answer or explicit refusal."},

@@ -63,6 +63,23 @@ class CitationOut(BaseModel):
     )
 
 
+class QueryDebug(BaseModel):
+    """Safe, opt-in diagnostics for one query execution.
+
+    This is deliberately an allowlist rather than a dump of graph state. Provider
+    credentials, prompts, retrieved passages and model input never belong here.
+    """
+
+    timings_ms: dict[str, float] = Field(
+        default_factory=dict,
+        description="Elapsed milliseconds keyed by query graph node.",
+    )
+    invalid_markers: list[int] = Field(
+        default_factory=list,
+        description="Citation marker ordinals emitted by the model but not resolved.",
+    )
+
+
 class QueryResponse(BaseModel):
     """Grounded answer or an explicit refusal."""
 
@@ -77,6 +94,10 @@ class QueryResponse(BaseModel):
     refusal_reason: str | None = Field(
         default=None,
         description="Machine-readable refusal explanation; null for grounded answers.",
+    )
+    debug: QueryDebug | None = Field(
+        default=None,
+        description="Safe pipeline diagnostics, populated only when the request opts in.",
     )
 
 

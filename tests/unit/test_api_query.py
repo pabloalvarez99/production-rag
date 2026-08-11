@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from production_rag.api.routes import query as query_route
-from production_rag.api.schemas import CitationOut, QueryRequest, QueryResponse
+from production_rag.api.schemas import CitationOut, QueryDebug, QueryRequest, QueryResponse
 from production_rag.config import Settings
 from production_rag.retrieval.hybrid import Retriever
 
@@ -34,8 +34,8 @@ class FakeQueryExecutor:
         return self.response
 
 
-def _answer() -> QueryResponse:
-    return QueryResponse(
+def _answer(*, debug: QueryDebug | None = None) -> QueryResponse:
+    response = QueryResponse(
         answer="RRF fuses rank positions instead of incomparable scores [1].",
         citations=[
             CitationOut(
@@ -51,6 +51,9 @@ def _answer() -> QueryResponse:
         refused=False,
         refusal_reason=None,
     )
+    if debug is not None:
+        return response.model_copy(update={"debug": debug})
+    return response
 
 
 def _override(client: TestClient, executor: FakeQueryExecutor) -> None:
@@ -59,7 +62,14 @@ def _override(client: TestClient, executor: FakeQueryExecutor) -> None:
 
 
 def test_query_returns_grounded_answer_and_request_id(client: TestClient) -> None:
-    executor = FakeQueryExecutor(_answer())
+    executor = FakeQueryExecutor(
+        _answer(
+            debug=QueryDebug(
+                timings_ms={"retrieve": 1.25, "generate": 2.5},
+                invalid_markers=[],
+            )
+        )
+    )
     _override(client, executor)
 
     response = client.post(
@@ -91,6 +101,10 @@ def test_query_returns_grounded_answer_and_request_id(client: TestClient) -> Non
         ],
         "refused": False,
         "refusal_reason": None,
+        "debug": {
+            "timings_ms": {"retrieve": 1.25, "generate": 2.5},
+            "invalid_markers": [],
+        },
     }
     payload, _, request_id = executor.calls[0]
     assert payload.question == "Why use RRF?"
@@ -134,7 +148,9 @@ def test_query_defaults_are_forwarded_without_network(client: TestClient) -> Non
     assert payload.debug is False
 
 
+@pytest.mark.parametrize("debug_requested", [False, True])
 def test_default_executor_composes_a1_run_query_without_network(
+    debug_requested: bool,
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = SimpleNamespace(
@@ -165,10 +181,21 @@ def test_default_executor_composes_a1_run_query_without_network(
         classmethod(lambda cls, **kwargs: retriever),
     )
 
-    def fake_run_query(question: str, **kwargs: Any) -> QueryResponse:
+    def fake_run_query(question: str, *, request_id: str, **kwargs: Any) -> SimpleNamespace:
         calls["question"] = question
+        calls["request_id"] = request_id
         calls.update(kwargs)
-        return _answer()
+        answer = _answer()
+        return SimpleNamespace(
+            answer=answer.answer,
+            citations=answer.citations,
+            refused=answer.refused,
+            refusal_reason=answer.refusal_reason,
+            timings_ms={"retrieve": 1.25, "generate": 2.5},
+            invalid_markers=(7,),
+            api_key="sensitive-provider-value",
+            system_prompt="internal system instructions",
+        )
 
     monkeypatch.setattr(query_route, "_run_query", fake_run_query)
 
@@ -179,13 +206,26 @@ def test_default_executor_composes_a1_run_query_without_network(
             "mode": "dense",
             "rerank": "fake",
             "llm": "fake",
-            "debug": True,
+            "debug": debug_requested,
         },
     )
 
     assert response.status_code == 200
+    if debug_requested:
+        assert response.json()["debug"] == {
+            "timings_ms": {"retrieve": 1.25, "generate": 2.5},
+            "invalid_markers": [7],
+        }
+    else:
+        assert "debug" not in response.json()
+        assert "timings_ms" not in response.text
+    assert "api_key" not in response.text
+    assert "sensitive-provider-value" not in response.text
+    assert "system_prompt" not in response.text
+    assert "internal system instructions" not in response.text
     assert calls == {
         "question": "Why use RRF?",
+        "request_id": response.headers["X-Request-ID"],
         "retriever": retriever,
         "llm": llm,
         "config": config,
