@@ -20,7 +20,10 @@ the evaluator; they are not a retrieval-quality benchmark.
 Use `golden-corpus.jsonl` with an ingest rooted at `data/corpus/`. It contains
 60 source-labelled items over the vendored Qdrant documentation, exactly ten in
 each adversarial category: `lexical_only`, `paraphrase_only`, `multi_source`,
-`distractor`, `near_miss_unanswerable`, and `deep_rank`.
+`distractor`, `near_miss_unanswerable`, and `deep_rank`. The original
+`corpus-dist-009` was removed because its supposed wrong document also contained
+the answer; `corpus-dist-011` replaces it with a measured rank-1/rank-2 genuine
+competition rather than reusing the retired id or padding with a weak case.
 
 The larger corpus exists to make source-level `hit@5` discriminating. With nine
 sources, five random distinct results hit a labelled source about 56% of the
@@ -35,6 +38,12 @@ matching is exact:
 
 The corpus golden set does not imply a quality result by itself. No paid
 embedding or hosted judge baseline was run when it was authored.
+
+`paraphrase_only` has a mechanical invariant: after the production BM25
+tokenizer lowercases and removes English stopwords, a query shares zero terms
+with every full document named by `expected_source_paths`. Checking the whole
+target document is deliberately stronger than checking only its answering
+chunk, and `scripts/check_golden_integrity.py` enforces it.
 
 The file is committed and currently holds the **seed set**: 17 items labelled at
 *document* granularity. The chunk-level schema below is the target, not what is
