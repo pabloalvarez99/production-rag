@@ -20,6 +20,8 @@ RETRIEVE    := python -m production_rag.retrieve --config $(CONFIG_FILE)
 EVAL_HIT    := python -m production_rag.evals.source_hit --config $(CONFIG_FILE)
 ABLATION    := python -m production_rag.evals.ablation --config $(CONFIG_FILE)
 ANSWER      := python -m production_rag.query
+EVAL        := python -m production_rag.evals.run
+EVAL_REPORT_DIR ?= data/eval/reports
 
 # Retrieval knobs (M2). QUERY has no sensible default: retrieve-fake without one
 # would silently score a question nobody asked.
@@ -27,11 +29,13 @@ QUERY ?=
 MODE  ?= hybrid
 TOPK  ?=
 QUESTION ?=
+EVAL_ARGS ?=
 
 .DEFAULT_GOAL := help
 .PHONY: help build up down restart logs ps health health-ready ingest-fake ingest-sample \
         ingest-dry reingest-fake retrieve-fake retrieve-sample eval-hit-fake eval-hit-sample \
         eval-ablation-fake query-fake query-debug-fake \
+        eval-tier1 eval-tier2-fake eval-all-fake \
         test test-host shell-api shell-qdrant clean
 
 help: ## Show this help
@@ -129,6 +133,31 @@ eval-hit-sample: ## Score hit@k with real embeddings (needs OPENAI_API_KEY; cost
 
 eval-ablation-fake: ## Compare dense/sparse/hybrid/hybrid+rerank(fake) offline
 	$(COMPOSE) run --rm $(API) $(ABLATION) --embedder fake
+
+# ---------------------------------------------------------------------------
+# Evaluate (M6). The unified runner is owned by A1. Reports need a nested
+# writable mount because Compose deliberately mounts all of data/ read-only.
+# EVAL_ARGS passes the runner's optional knobs, for example:
+#   make eval-tier1 EVAL_ARGS="--k 5 --fail-under-hit 0.8"
+# ---------------------------------------------------------------------------
+
+eval-tier1: ## Run the free deterministic retrieval tier [EVAL_ARGS="..."]
+	$(COMPOSE) run --rm \
+		-v "$(CURDIR)/data/eval/reports:/app/data/eval/reports" \
+		$(API) $(EVAL) --tier 1 --embedder fake \
+		--report $(EVAL_REPORT_DIR)/tier1.json $(EVAL_ARGS)
+
+eval-tier2-fake: ## Run answer-tier structural checks with fake LLM/judge (no keys)
+	$(COMPOSE) run --rm \
+		-v "$(CURDIR)/data/eval/reports:/app/data/eval/reports" \
+		$(API) $(EVAL) --tier 2 --embedder fake --llm fake \
+		--report $(EVAL_REPORT_DIR)/tier2-fake.json $(EVAL_ARGS)
+
+eval-all-fake: ## Run both tiers with fake providers (plumbing, not quality)
+	$(COMPOSE) run --rm \
+		-v "$(CURDIR)/data/eval/reports:/app/data/eval/reports" \
+		$(API) $(EVAL) --tier all --embedder fake --llm fake \
+		--report $(EVAL_REPORT_DIR)/all-fake.json $(EVAL_ARGS)
 
 # ---------------------------------------------------------------------------
 # Query (M4). Fake generation is deterministic offline plumbing; it validates

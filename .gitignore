@@ -77,6 +77,8 @@ data/processed/*
 !data/processed/README.md
 data/interim/
 data/eval/runs/
+data/eval/reports/*
+!data/eval/reports/.gitkeep
 data/**/*.parquet
 !data/raw/sample/**
 
