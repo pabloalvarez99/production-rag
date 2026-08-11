@@ -1,0 +1,230 @@
+---
+title: Administration
+short_description: "Administer a running Qdrant instance with runtime tools for recovery mode, strict mode, and limiting expensive query patterns."
+description: "Manage Qdrant at runtime with administration tools for recovery mode, strict mode, and guardrails against expensive queries on unindexed payload fields."
+weight: 10
+aliases:
+  - /documentation/administration
+  - /documentation/ops-configuration/administration
+  - /documentation/operations/administration
+---
+
+# Administration
+
+Qdrant exposes administration tools which enable to modify at runtime the behavior of a qdrant instance without changing its configuration manually.
+
+## Recovery Mode
+
+*Available as of v1.2.0*
+
+Recovery mode can help in situations where Qdrant fails to start repeatedly.
+When starting in recovery mode, Qdrant only loads collection metadata to prevent
+going out of memory. This allows you to resolve out of memory situations, for
+example, by deleting a collection. After resolving Qdrant can be restarted
+normally to continue operation.
+
+In recovery mode, collection operations are limited to
+[deleting](/documentation/manage-data/collections/#delete-collection) a
+collection. That is because only collection metadata is loaded during recovery.
+
+To enable recovery mode with the Qdrant Docker image you must set the
+environment variable `QDRANT_ALLOW_RECOVERY_MODE=true`. The container will try
+to start normally first, and restarts in recovery mode if initialisation fails
+due to an out of memory error. This behavior is disabled by default.
+
+If using a Qdrant binary, recovery mode can be enabled by setting a recovery
+message in an environment variable, such as
+`QDRANT__STORAGE__RECOVERY_MODE="My recovery message"`.
+
+## Low Memory Mode
+
+*Available as of v1.18.0*
+
+Low memory mode reduces memory requirements at startup. On memory-constrained hosts, the normal startup process can exhaust available memory before the node becomes reachable resulting in a crash loop. Low memory mode lets you bring the node up with a reduced memory footprint so you can make configuration changes to reduce memory usage. Revert it once the node is stable.
+
+Three modes are available:
+
+| Mode | Description |
+| --- | --- |
+| `disabled` | Default. Loads all components as persisted. |
+| `no_resident` | Downgrades quantized vectors and payload field indexes to the `cold` [memory tier](/documentation/ops-configuration/memory-tiers/), regardless of their configured tier. |
+| `no_populate` | Same as `no_resident`, and additionally forces vectors and the HNSW graph to `cold` by skipping mmap prefetch on load. Offers the lowest startup memory footprint, but first queries will be slower until the OS page cache warms up. |
+
+To enable low memory mode, set `storage.low_memory_mode` in the node's configuration file:
+
+```yaml
+storage:
+  low_memory_mode: no_populate   # or no_resident
+```
+
+Or use the environment variable:
+
+```bash
+QDRANT__STORAGE__LOW_MEMORY_MODE=no_populate
+```
+
+Low memory mode takes effect on the next restart. It doesn't modify the [memory tier](/documentation/ops-configuration/memory-tiers/) settings persisted in your collections — it only overrides where data gets loaded for that startup.
+
+## Strict Mode
+
+*Available as of v1.13.0*
+
+Strict mode is a feature to restrict certain type of operations on a collection in order to protect the Qdrant cluster. The goal is to prevent inefficient usage patterns that could overload the system.
+
+Strict mode ensures a more predictable and responsive service when you do not have control over the queries that are being executed. Upon crossing a limit, the server will return a client side error with the information about the limit that was crossed.
+
+The `strict_mode_config` can be enabled when [creating](#create-a-collection) a new collection, see [schema definitions](https://api.qdrant.tech/api-reference/collections/create-collection#request.body.strict_mode_config) for all the available `strict_mode_config` parameters. As part of the config, the `enabled` field act as a toggle to enable or disable the strict mode dynamically. 
+
+Simply enabling strict mode without specifying a specific restriction does not have any effect. You need to explicitly set the restrictions you want to enforce.
+
+On Qdrant Cloud, strict mode is enabled by default for new collections. Refer to [Configure Qdrant Cloud Clusters](/documentation/cloud/configure-cluster/) for the specific restrictions.
+
+It is possible to raise the default limits and/or disable strict mode entirely. Though, in order to ensure a stable cluster we strongly recommend to keep strict mode enabled using its default configuration. For disabling strict mode on an existing collection use:
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/disable/" >}}
+
+### Disable Retrieving via Non Indexed Payload
+
+Setting `unindexed_filtering_retrieve` to false prevents retrieving points by filtering on a non indexed payload key which can be very slow.
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/unindexed-filtering-retrieve/" >}}
+
+Or turn it off later on an existing collection through the [update collection parameters](/documentation/manage-data/collections/#update-collection-parameters) API.
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/unindexed-filtering-retrieve-off/" >}}
+
+### Disable Updating via Non Indexed Payload
+
+Setting `unindexed_filtering_update` to false prevents updating points by filtering on a non indexed payload key which can be very slow.
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/unindexed-filtering-update/" >}}
+
+### Maximum Number of Payload Index Count
+
+Setting `max_payload_index_count` caps the maximum number of payload index that can exist on a collection.
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/max-payload-index-count/" >}}
+
+### Maximum Query `limit` Parameter
+
+Retrieving large result set is expensive.
+
+Setting `max_query_limit` caps the maximum number of points that can be retrieved in a single query.
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/max-query-limit/" >}}
+
+### Maximum `timeout` Parameter
+
+Long running operations are often symptomatic of a deeper issue.
+
+Setting `max_timeout` caps the maximum value in seconds for the `timeout` parameter in all API operations.
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/max-timeout/" >}}
+
+### Disable Exact Search
+
+Exact search bypasses the HNSW index and performs a brute-force scan, which can be very slow on large collections.
+
+Setting `search_allow_exact` to false prevents clients from requesting exact search.
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/search-allow-exact/" >}}
+
+### Maximum HNSW ef Parameter
+
+A high HNSW `ef` value increases recall but also increases search latency.
+
+Setting `search_max_hnsw_ef` caps the maximum `ef` value allowed in search parameters.
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/search-max-hnsw-ef/" >}}
+
+### Maximum Search Oversampling
+
+A high oversampling factor increases the number of candidates evaluated during search, which can significantly increase latency.
+
+Setting `search_max_oversampling` caps the maximum oversampling factor allowed in search parameters.
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/search-max-oversampling/" >}}
+
+### Maximum Size of a Filtering Condition
+
+Large filtering conditions are expensive to evaluate.
+
+Setting `condition_max_size` caps the maximum number of element a filtering condition can have.
+
+e.g. the number of elements in `MatchAny`
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/condition-max-size/" >}}
+
+### Maximum Number of Conditions in a Filter
+
+A large number of filtering conditions are expensive to evaluate.
+
+Setting `filter_max_conditions` caps the maximum number of conditions filters can have.
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/filter-max-conditions/" >}}
+
+### Maximum Batch Size When Inserting Vectors
+
+Sending very large batch upserts can create internal congestion.  
+
+Setting `upsert_max_batchsize` caps the maximum size in bytes of a batch during vector upserts.
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/upsert-max-batchsize/" >}}
+
+### Maximum Batch Size When Searching
+
+Sending very large search batches can create internal congestion.
+
+Setting `search_max_batchsize` caps the maximum number of searches in a single batch request.
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/search-max-batchsize/" >}}
+
+### Maximum Collection Storage Size
+
+It is possible to set the maximum size of a collection in terms of vectors and/or payload storage size.
+
+Setting `max_collection_vector_size_bytes` and/or `max_collection_payload_size_bytes` caps the maximum byte size of a collection.
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/max-collection-storage-size-bytes/" >}}
+
+### Maximum Resident Memory Usage
+
+<aside role="alert">Deprecated as of v1.19.0. Use <a href="/documentation/ops-configuration/quotas/">resource quotas</a> to cap memory instead.</aside>
+
+When a node is under memory pressure, new write operations can destabilize the cluster.
+
+Setting `max_resident_memory_percent` rejects memory-consuming write operations (such as upsert and set payload) when process resident memory exceeds the given percentage of total system memory. Delete operations are not affected. Accepts values in the range 1–100.
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/max-resident-memory-percent/" >}}
+
+### Maximum Points Count
+
+Setting `max_points_count` caps the maximum number of points for a collection.
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/max-points-count/" >}}
+
+### Rate Limiting
+
+An extremely high rate of incoming requests can have a negative impact on the latency.
+
+Setting `read_rate_limit` and/or `write_rate_limit` to cap the maximum number of operations per minute per replica.
+
+When exceeding the maximum number of operations, the client will receive an HTTP 429 error code with a suggested delay before retrying.
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/rate-limiting/" >}}
+
+### Maximum Vectors per Multivector
+
+A multivector with many vectors per point is expensive to store, index and query.
+
+Setting `multivector_config` caps the maximum number of vectors per multivector for each named vector.
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/multivector-config/" >}}
+
+### Maximum Sparse Vector Length
+
+Long sparse vectors increase memory usage and slow down filtering.
+
+Setting `sparse_config` caps the maximum length of sparse vectors for each named vector.
+
+{{< code-snippet path="/documentation/headless/snippets/strict-mode/sparse-config/" >}}

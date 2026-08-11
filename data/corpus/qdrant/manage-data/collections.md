@@ -1,0 +1,435 @@
+---
+title: Collections
+short_description: "Create and configure Qdrant collections — named sets of points sharing vector dimensions and a distance metric."
+description: "Configure Qdrant collections, define named vectors with configurable distance metrics, and manage the building blocks of vector search at the collection level."
+weight: 20
+aliases:
+  - ../collections
+  - /concepts/collections/
+  - /documentation/frameworks/fondant/documentation/concepts/collections/
+---
+
+# Collections
+
+A collection is a named set of points (vectors with a payload) among which you can search. The vector of each point within the same collection must have the same dimensionality and be compared by a single metric. [Named vectors](#collection-with-multiple-vectors) can be used to have multiple vectors in a single point, each of which can have their own dimensionality and metric requirements.
+
+Distance metrics are used to measure similarities among vectors.
+The choice of metric depends on the way vectors obtaining and, in particular, on the method of neural network encoder training.
+
+Qdrant supports these most popular types of metrics:
+
+* Dot product: `Dot` - [[wiki]](https://en.wikipedia.org/wiki/Dot_product)
+* Cosine similarity: `Cosine`  - [[wiki]](https://en.wikipedia.org/wiki/Cosine_similarity)
+* Euclidean distance: `Euclid` - [[wiki]](https://en.wikipedia.org/wiki/Euclidean_distance)
+* Manhattan distance: `Manhattan` - [[wiki]](https://en.wikipedia.org/wiki/Taxicab_geometry)
+
+<aside role="status">For search efficiency, Cosine similarity is implemented as dot-product over normalized vectors. Vectors are automatically normalized during upload</aside>
+
+In addition to metrics and vector size, each collection uses its own set of parameters that controls collection optimization, index construction, and vacuum.
+These settings can be changed at any time by a corresponding request.
+
+## Setting Up Multitenancy
+
+**How many collections should you create?** In most cases, you should only use a single collection with payload-based partitioning. This approach is called [multitenancy](https://en.wikipedia.org/wiki/Multitenancy). It is efficient for most of users, but it requires additional configuration. [Learn how to set it up](/documentation/manage-data/multitenancy/).
+
+**When should you create multiple collections?** When you have a limited number of users and you need isolation. This approach is flexible, but it may be more costly, since creating numerous collections may result in resource overhead. Also, you need to ensure that they do not affect each other in any way, including performance-wise.
+
+## Create a Collection
+
+
+{{< code-snippet path="/documentation/headless/snippets/create-collection/simple/" >}}
+
+In addition to the required options, you can also specify custom values for the following collection options:
+
+* `hnsw_config` - see [indexing](/documentation/manage-data/indexing/#vector-index) for details.
+* `wal_config` - Write-Ahead-Log related configuration. See more details about [WAL](/documentation/manage-data/storage/#versioning).
+* `optimizers_config` - see [optimizer](/documentation/ops-optimization/optimizer/) for details.
+* `shard_number` - which defines how many shards the collection should have. See [distributed deployment](/documentation/scaling/distributed_deployment/#sharding) section for details.
+* `payload.memory` - configures the [memory tier](/documentation/ops-configuration/memory-tiers/) for payload storage.
+* `quantization_config` - see [quantization](/documentation/manage-data/quantization/#setting-up-quantization-in-qdrant) for details.
+* `strict_mode_config` - see [strict mode](/documentation/ops-configuration/administration/#strict-mode) for details.
+
+Default parameters for the optional collection parameters are defined in [configuration file](https://github.com/qdrant/qdrant/blob/master/config/config.yaml).
+
+See [schema definitions](https://api.qdrant.tech/api-reference/collections/create-collection) and a [configuration file](https://github.com/qdrant/qdrant/blob/master/config/config.yaml) for more information about collection and vector parameters.
+
+*Available as of v1.2.0*
+
+Qdrant always [stores vectors on disk](/documentation/manage-data/storage/#vector-storage). You can configure a [memory tier](/documentation/ops-configuration/memory-tiers/) for each vector to control how much of that data also lives in memory.
+
+
+### Collection with Multiple Vectors
+
+*Available as of v0.10.0*
+
+It is possible to have multiple vectors per record.
+This feature allows for multiple vector storages per collection. 
+To distinguish vectors in one record, they should have a unique [name](/documentation/manage-data/vectors/#named-vectors).
+Each named vector in this mode has its distance and size:
+
+
+{{< code-snippet path="/documentation/headless/snippets/create-collection/multiple-vectors/" >}}
+
+For rare use cases, it is possible to create a collection without any vector storage.
+
+*Available as of v1.1.1*
+
+For each named vector you can optionally specify
+[`hnsw_config`](/documentation/manage-data/indexing/#vector-index) or
+[`quantization_config`](/documentation/manage-data/quantization/#setting-up-quantization-in-qdrant) to
+deviate from the collection configuration. This can be useful to fine-tune
+search performance on a vector level.
+
+*Available as of v1.2.0*
+
+Qdrant always [stores vectors on disk](/documentation/manage-data/storage/#vector-storage). On a per-vector basis, you can configure a [memory tier](/documentation/ops-configuration/memory-tiers/) to control how much of that data also lives in memory.
+
+
+### Vector Datatypes
+
+*Available as of v1.9.0*
+
+By default, Qdrant stores each vector dimension as a 32-bit float. Memory and storage grow linearly with dimensionality, so for large vectors this adds up quickly. To reduce that cost, or to store vectors that are already lower precision, you can configure a different datatype: `float16` (half-precision), `uint8` (unsigned 8-bit integers), or `turbo4` (4 bits).
+
+For example, to create a collection with `uint8` embeddings:
+
+{{< code-snippet path="/documentation/headless/snippets/create-collection/datatype-uint8/" >}}
+
+See [Datatypes](/documentation/manage-data/vectors/#datatypes) for the full set of options and their tradeoffs.
+
+
+### Collection with Sparse Vectors
+
+*Available as of v1.7.0*
+
+Qdrant supports sparse vectors as a first-class citizen.
+
+Sparse vectors are useful for text search, where each word is represented as a separate dimension.
+
+Collections can contain sparse vectors as additional [named vectors](#collection-with-multiple-vectors) along side regular dense vectors in a single point.
+
+Unlike dense vectors, sparse vectors must be named.
+And additionally, sparse vectors and dense vectors must have different names within a collection.
+
+{{< code-snippet path="/documentation/headless/snippets/create-collection/sparse-vector/" >}}
+
+Outside of a unique name, there are no required configuration parameters for sparse vectors.
+
+The distance function for sparse vectors is always `Dot` and does not need to be specified.
+
+However, there are optional parameters to tune the underlying [sparse vector index](/documentation/manage-data/indexing/#sparse-vector-index).
+
+### Create Collection from Another Collection
+
+To create a collection from another collection, use the [Migration Tool](https://github.com/qdrant/migration/). You can use it to either copy a collection within the same Qdrant instance or to copy a collection to another instance.
+
+For example, to copy a collection from a local instance to a Qdrant Cloud instance, run the following command:
+
+```bash
+docker run --net=host --rm -it registry.cloud.qdrant.io/library/qdrant-migration qdrant \
+    --source.url 'http://localhost:6334' \
+    --source.collection 'source-collection' \
+    --target.url 'https://example.cloud-region.cloud-provider.cloud.qdrant.io:6334' \
+    --target.api-key 'qdrant-key' \
+    --target.collection 'target-collection' \
+    --migration.batch-size 64
+```
+
+## Check Collection Existence
+
+*Available as of v1.8.0*
+
+{{< code-snippet path="/documentation/headless/snippets/check-collection-exists/simple/" >}}
+
+## Delete Collection
+
+{{< code-snippet path="/documentation/headless/snippets/delete-collection/simple/" >}}
+
+## Update Collection
+
+After creating a collection, you can change its configuration, its vectors, and the configuration of its vectors.
+
+### Update Collection Parameters
+
+Dynamic parameter updates may be helpful, for example, for more efficient initial loading of vectors.
+For example, you can disable indexing during the upload process, and enable it immediately after the upload is finished.
+As a result, you will not waste extra computation resources on rebuilding the index.
+
+The following command enables indexing for segments that have more than 10000 kB of vectors stored:
+
+{{< code-snippet path="/documentation/headless/snippets/update-collection/simple/" >}}
+
+The following parameters can be updated:
+
+* `optimizers_config` - see [optimizer](/documentation/ops-optimization/optimizer/) for details.
+* `hnsw_config` - see [indexing](/documentation/manage-data/indexing/#vector-index) for details.
+* `quantization_config` - see [quantization](/documentation/manage-data/quantization/#setting-up-quantization-in-qdrant) for details.
+* `vectors_config` - vector-specific configuration, including individual `hnsw_config`, `quantization_config`, and [`memory`](/documentation/ops-configuration/memory-tiers/) tier settings.
+* `params` - other collection parameters, including `read_fan_out_delay_ms`, `write_consistency_factor`, and the payload's [`memory`](/documentation/ops-configuration/memory-tiers/) tier.
+* `strict_mode_config` - see [strict mode](/documentation/ops-configuration/administration/#strict-mode) for details.
+
+Full API specification is available in [schema definitions](https://api.qdrant.tech/api-reference/collections/update-collection).
+
+Calls to this endpoint may be blocking as it waits for existing optimizers to
+finish. We recommended against using this in a production database as it may
+introduce huge overhead due to the rebuilding of the index.
+
+### Update Vector Schema
+
+*Available as of v1.18.0*
+
+Named vectors can be added to or removed from an existing collection without having to recreate the collection. This is useful for [embedding model migration](/documentation/tutorials-operations/embedding-model-migration/): you can add a new vector for the new model, re-embed points in the background, and then remove the old vector when you're ready. 
+
+<aside role="status">
+These are schema-level operations that add or remove vector definitions from a collection's schema. To add/remove vector values from specific points, use the <a href="/documentation/manage-data/points/#update-vectors">update</a> and <a href="/documentation/manage-data/points/#delete-vectors">delete</a> vectors operations.
+</aside>
+
+To add a new dense named vector to an existing collection:
+
+{{< code-snippet path="/documentation/headless/snippets/create-named-vector/dense/" >}}
+
+To add a new sparse named vector to an existing collection:
+
+{{< code-snippet path="/documentation/headless/snippets/create-named-vector/sparse/" >}}
+
+The request body only accepts properties that define the vector space (size and distance for dense vectors). Quantization, storage type, and index configuration can be set afterward using the [update collection parameters](/documentation/manage-data/collections/#update-collection-parameters) or [update vector parameters](/documentation/manage-data/collections/#update-vector-parameters) APIs.
+
+Existing points will not have values for the newly added vector until they are upserted again. The new vector can be queried immediately, but will return no results until it is populated.
+
+To delete a named vector from an existing collection:
+
+{{< code-snippet path="/documentation/headless/snippets/delete-named-vector/" >}}
+
+Deleting a named vector removes its schema and all associated data. Existing points are otherwise unaffected.
+
+### Update Vector Parameters
+
+*Available as of v1.4.0*
+
+<aside role="status">To update vector parameters using the collection update API, you must always specify a vector name. If your collection does not have named vectors, use an empty (<code>""</code>) name.</aside>
+
+Qdrant 1.4 adds support for updating more collection parameters at runtime. HNSW
+index, quantization and disk configurations can now be changed without
+recreating a collection. Segments (with index and quantized data) will
+automatically be rebuilt in the background to match updated parameters.
+
+To move vector data to the `cold` [memory tier](/documentation/ops-configuration/memory-tiers/) for a collection that **does not have** named vectors,
+use `""` as name:
+
+
+{{< code-snippet path="/documentation/headless/snippets/update-collection/vectors-to-disk-default/" >}}
+
+
+To move vector data to the `cold` memory tier for a collection that **does have** named vectors:
+
+Note: To create a vector name, follow the procedure from our [Points](/documentation/manage-data/points/#create-vector-name).
+
+
+{{< code-snippet path="/documentation/headless/snippets/update-collection/vectors-to-disk-named/" >}}
+
+In the following example the HNSW index and quantization parameters are updated,
+both for the whole collection, and for `my_vector` specifically:
+
+
+{{< code-snippet path="/documentation/headless/snippets/update-collection/hnsw-and-quantization/" >}}
+
+## Collection Info
+
+Qdrant allows determining the configuration parameters of an existing collection to better understand how the points are
+distributed and indexed.
+
+{{< code-snippet path="/documentation/headless/snippets/collection-info/simple/" >}}
+
+<details>
+<summary>Expected result</summary>
+
+```json
+{
+    "result": {
+        "status": "green",
+        "optimizer_status": "ok",
+        "indexed_vectors_count": 1024232,
+        "points_count": 1068786,
+        "segments_count": 31,
+        "config": {
+            "params": {
+                "vectors": {
+                    "size": 384,
+                    "distance": "Cosine"
+                },
+                "shard_number": 1,
+                "replication_factor": 1,
+                "write_consistency_factor": 1,
+                "on_disk_payload": false
+            },
+            "hnsw_config": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold": 10000,
+                "max_indexing_threads": 0
+            },
+            "optimizer_config": {
+                "deleted_threshold": 0.2,
+                "vacuum_min_vector_number": 1000,
+                "default_segment_number": 0,
+                "max_segment_size": null,
+                "memmap_threshold": null,
+                "indexing_threshold": 20000,
+                "flush_interval_sec": 5,
+                "max_optimization_threads": 1
+            },
+            "wal_config": {
+                "wal_capacity_mb": 32,
+                "wal_segments_ahead": 0
+            }
+        },
+        "payload_schema": {}
+    },
+    "status": "ok",
+    "time": 0.00010143
+}
+```
+
+</details>
+
+If you insert the vectors into the collection, the `status` field may become
+`yellow` whilst it is optimizing. It will become `green` once all the points are
+successfully processed.
+
+The following color statuses are possible:
+
+- 🟢 `green`: collection is ready
+- 🟡 `yellow`: collection is optimizing
+- ⚫ `grey`: collection is pending optimization ([help](#grey-collection-status))
+- 🔴 `red`: an error occurred which the engine could not recover from
+
+### Grey Collection Status
+
+_Available as of v1.9.0_
+
+A collection may have the grey ⚫ status or show "optimizations pending,
+awaiting update operation" as optimization status. This state is normally caused
+by restarting a Qdrant instance while optimizations were ongoing.
+
+It means the collection has optimizations pending, but they are paused. You must
+send any update operation to trigger and start the optimizations again.
+
+For example:
+
+{{< code-snippet path="/documentation/headless/snippets/update-collection/trigger-indexing/" >}}
+
+Alternatively you may use the `Trigger Optimizers` button in the [Qdrant Web UI](/documentation/web-ui/).
+It is shown next to the grey collection status on the collection info page.
+
+### Approximate Point and Vector Counts
+
+You may be interested in the count attributes:
+
+- `points_count` - total number of objects (vectors and their payloads) stored in the collection
+- `indexed_vectors_count` - total number of vectors stored in the HNSW or sparse index. Qdrant does not store all the vectors in the index, but only if an index segment might be created for a given configuration.
+
+The above counts are not exact, but should be considered approximate. Depending
+on how you use Qdrant these may give very different numbers than what you may
+expect. It's therefore important **not** to rely on them.
+
+More specifically, these numbers represent the count of points and vectors in
+Qdrant's internal storage. Internally, Qdrant may temporarily duplicate points
+as part of automatic optimizations. It may keep changed or deleted points for a
+bit. And it may delay indexing of new points. All of that is for optimization
+reasons.
+
+Updates you do are therefore not directly reflected in these numbers. If you see
+a wildly different count of points, it will likely resolve itself once a new
+round of automatic optimizations is completed.
+
+To clarify: these numbers don't represent the exact amount of points or vectors
+you have inserted, nor does it represent the exact number of distinguishable
+points or vectors you can query. If you want to know exact counts, refer to the
+[count API](/documentation/manage-data/points/#counting-points).
+
+_Note: these numbers may be removed in a future version of Qdrant._
+
+### Indexing Vectors in HNSW
+
+In some cases, you might be surprised the value of `indexed_vectors_count` is lower than you expected. This is an intended behaviour and
+depends on the [optimizer configuration](/documentation/ops-optimization/optimizer/). A new index segment is built if the size of non-indexed vectors is higher than the
+value of `indexing_threshold`(in kB).  If your collection is very small or the dimensionality of the vectors is low, there might be no HNSW segment
+created and `indexed_vectors_count` might be equal to `0`.
+
+It is possible to reduce the `indexing_threshold` for an existing collection by [updating collection parameters](#update-collection-parameters).
+
+### Collection Metadata
+
+*Available as of v1.16.0*
+
+For convenience and better data organization, Qdrant allows attaching custom metadata to collections in the form of key-value pairs.
+Adding metadata is treated as a part of collection configuration and synchronized across all nodes in a cluster with consensus protocol.
+
+Collection metadata can be specified during collection creation:
+
+{{< code-snippet path="/documentation/headless/snippets/create-collection/with-metadata/" >}}
+
+as well as updated later:
+
+{{< code-snippet path="/documentation/headless/snippets/update-collection/with-metadata/" >}}
+
+Note, that update operation only modifies the specified metadata fields, leaving other fields unchanged.
+
+When specified, metadata is returned as part of collection info:
+
+``` json
+{
+    "result": {
+        "config": {
+            "metadata": {
+                "my-metadata-field": {
+                    "key-a": "value-a",
+                    "key-b": 42
+                },
+                "another-field": 123
+            }
+        }
+    }
+}
+```
+
+
+## Collection Aliases
+
+In a production environment, it is sometimes necessary to switch different versions of vectors seamlessly.
+For example, when upgrading to a new version of the neural network.
+
+There is no way to stop the service and rebuild the collection with new vectors in these situations.
+Aliases are additional names for existing collections.
+All queries to the collection can also be done identically, using an alias instead of the collection name.
+
+Thus, it is possible to build a second collection in the background and then switch alias from the old to the new collection.
+Since all changes of aliases happen atomically, no concurrent requests will be affected during the switch.
+
+### Create Alias
+
+{{< code-snippet path="/documentation/headless/snippets/collection-aliases/create/" >}}
+
+### Remove Alias
+
+{{< code-snippet path="/documentation/headless/snippets/collection-aliases/delete/" >}}
+
+### Switch Collection
+
+Multiple alias actions are performed atomically.
+For example, you can switch underlying collection with the following command:
+
+{{< code-snippet path="/documentation/headless/snippets/collection-aliases/switch/" >}}
+
+### List Collection Aliases
+
+{{< code-snippet path="/documentation/headless/snippets/collection-aliases/list/" >}}
+
+### List All Aliases
+
+{{< code-snippet path="/documentation/headless/snippets/collection-aliases/list-all/" >}}
+
+### List All Collections
+
+{{< code-snippet path="/documentation/headless/snippets/list-all-collections/simple/" >}}
+

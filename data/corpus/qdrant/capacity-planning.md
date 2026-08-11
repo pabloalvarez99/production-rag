@@ -1,0 +1,117 @@
+---
+title: Capacity Planning
+short_description: "Size a Qdrant cluster by balancing RAM and disk for vectors, payload, indexes, replication, and quantization workloads."
+description: "Plan Qdrant cluster capacity: estimate RAM and disk for vectors, payloads, indexes, replication, and quantization to match your workload."
+partition: deploy
+weight: 115
+aliases:
+  - capacity
+  - /documentation/cloud/capacity-sizing
+  - /documentation/capacity-planning
+  - /documentation/operations/capacity-planning
+---
+# Capacity Planning
+
+When setting up your cluster, you'll need to figure out the right balance of **RAM** and **disk storage**. The best setup depends on a few things:
+
+- How many vectors you have and their dimensions.
+- The amount of payload data you're using and their indexes.
+- What data you want to store in memory versus on disk.
+- Your cluster's replication settings.
+- Whether you're using quantization and how you’ve set it up.
+
+<aside role="status">To estimate your collection footprint interactively, try the <a href="https://sizing.qdrant.tech/">Qdrant Sizing Calculator</a>.</aside>
+
+## Calculating RAM size 
+
+You should store frequently accessed data in RAM for faster retrieval. If you want to keep all vectors in memory for optimal performance, you can use this rough formula for estimation:
+
+```text
+memory_size = number_of_vectors * vector_dimension * 4 bytes * 1.5
+```
+
+At the end, we multiply everything by 1.5. This extra 50% accounts for metadata (such as indexes and point versions) and temporary segments created during optimization.
+
+Let's say you want to store 1 million vectors with 1024 dimensions:
+
+```text
+memory_size = 1,000,000 * 1024 * 4 bytes * 1.5 
+```
+The memory_size is approximately 6,144,000,000 bytes, or about 5.72 GB.
+
+Depending on the use case, large datasets can benefit from reduced memory requirements via [quantization](/documentation/manage-data/quantization/).
+
+## Calculating payload size
+
+This is always different. The size of the payload depends on the [structure and content of your data](/documentation/manage-data/payload/#payload-types). For instance:
+
+- **Text fields** consume space based on length and encoding (e.g. a large chunk of text vs a few words).
+- **Floats** have fixed sizes of 8 bytes for `int64` or `float64`.
+- **Boolean fields** typically consume 1 byte. 
+
+<aside role="alert">
+    The easiest way to calculate your payload size is to use a JSON size calculator.
+</aside>
+
+Calculating total payload size is similar to vectors. We have to multiply it by 1.5 for back-end indexing processes.
+
+```text
+total_payload_size = number_of_points * payload_size * 1.5 
+```
+
+Let's say you want to store 1 million points with JSON payloads of 5KB:
+
+```text
+total_payload_size = 1,000,000 * 5KB * 1.5 
+```
+The total_payload_size is approximately 5,000,000 bytes, or about 4.77 GB.
+
+## Choosing disk over RAM
+
+For optimal performance, you should store only frequently accessed data in RAM. The rest should be offloaded to the disk. For example, extra payload fields that you don't use for filtering can be stored on disk. 
+
+Only [indexed fields](/documentation/manage-data/indexing/#payload-index) are `pinned` in RAM by default. You can read more about payload storage and [memory tiers](/documentation/ops-configuration/memory-tiers/) in the [Storage](/documentation/manage-data/storage/#payload-storage) section.
+
+### Storage-focused configuration
+
+If your priority is to handle large volumes of vectors with average search latency, it's recommended to move vectors to the [`cold` memory tier](/documentation/ops-configuration/memory-tiers/). In this setup, vectors are stored on disk in memory-mapped files, while only the most recently accessed pages get cached in RAM by the OS.
+
+The amount of available RAM greatly impacts search performance. As a general rule, if you store half as many vectors in RAM, search latency will roughly double.
+
+Disk speed is also crucial. [Contact us](/documentation/support/) if you have specific requirements for high-volume searches in our Cloud.
+
+### Subgroup-oriented configuration
+
+If your use case involves splitting vectors into multiple collections or subgroups based on payload values (e.g., serving searches for multiple users, each with their own subset of vectors), the `cold` memory tier is recommended.
+
+In this scenario, only the active subset of vectors will be cached in RAM, allowing for fast searches for the most recent and active users. You can estimate the required memory size as:
+
+```text
+memory_size = number_of_active_vectors * vector_dimension * 4 bytes * 1.5
+```
+
+Please refer to our [multitenancy](/documentation/manage-data/multitenancy/) documentation for more details on partitioning data in a Qdrant.
+
+## Scaling disk space in Qdrant Cloud
+
+Clusters supporting vector search require substantial disk space compared to other search systems. If you're running low on disk space, you can use the UI at [cloud.qdrant.io](https://cloud.qdrant.io/) to **Scale Up** your cluster.
+
+<aside role="status">Note: If you increase disk space via the Qdrant UI, you cannot reduce it later.</aside>
+
+When running low on disk space, consider the following benefits of scaling up:
+
+- **Larger Datasets**: Supports larger datasets, which can improve the relevance and quality of search results.
+- **Improved Indexing**: Enables the use of advanced indexing strategies like HNSW.
+- **Caching**: Enhances speed by having more RAM, allowing more frequently accessed data to be cached.
+- **Backups and Redundancy**: Facilitates more frequent backups, which is a key advantage for data safety.
+
+Always remember to add 50% of the vector size. This would account for things like indexes and auxiliary data used during operations such as vector insertion, deletion, and search. Thus, the estimated memory size including metadata is:
+
+```text
+total_vector_size = number_of_dimensions * 4 bytes * 1.5
+```
+
+**Disclaimers**
+
+- The above calculations are estimates at best. If you're looking for more accurate numbers, you should always test your data set in practice.
+- [Migration scenarios](/documentation/migration-recovery-options/) require more headroom than normal operations. When using the Migration Tool or restoring a snapshot, the target cluster needs twice the disk space currently used by the source collection. When using the Migration Tool, it also needs twice the RAM currently in use. To determine the current disk and RAM usage of your collection, check the [Web UI](/documentation/ops-monitoring/memory-usage/) or use the [API](/documentation/ops-monitoring/memory-usage/#api).

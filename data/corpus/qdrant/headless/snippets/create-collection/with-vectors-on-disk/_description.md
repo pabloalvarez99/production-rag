@@ -1,0 +1,1 @@
+This code snippet demonstrates how to move vectors to the `cold` memory tier for a collection. You can achieve this by setting the `memory` option to `cold` in the vectors configuration within the collection creation API.

@@ -1,0 +1,33 @@
+---
+title: Private Cloud
+short_description: "Run Qdrant Private Cloud in your own Kubernetes cluster with full control over scheduling, security, and disaster recovery."
+description: "Run Qdrant Private Cloud in any Kubernetes cluster with full control over scheduling, security, scaling, and disaster recovery, fully air-gapped."
+weight: 230
+partition: deploy
+---
+
+# Qdrant Private Cloud
+
+Qdrant Private Cloud allows you to manage Qdrant database clusters in any Kubernetes cluster on any infrastructure. It uses the same Qdrant Operator that powers Qdrant Managed Cloud and Qdrant Hybrid Cloud, but without any connection to the Qdrant Cloud Management Console.
+
+On top of the open source Qdrant database, it allows
+
+* Easy deployment and management of Qdrant database clusters in your own Kubernetes infrastructure
+* Zero-downtime upgrades of the Qdrant database with replication
+* Vertical and horizontal up and downscaling of the Qdrant database with auto rebalancing and shard splitting
+* Full control over scheduling, including Multi-AZ deployments
+* Backup & Disaster Recovery
+* Extended telemetry
+* Qdrant Enterprise Support Services
+
+Multi-AZ deployment is independent of replication factor: replicating your data doesn't by itself spread it across zones. See [Multi-AZ Deployments](/documentation/scaling/resilience/#multi-az-deployments) for the distinction.
+
+Since there is no communication or connection with Qdrant, you are fully responsible for the entire security of the Qdrant Private Cloud installation. This also means that you do not benefit from all the integrated management and observability features of Qdrant Managed Cloud and Hybrid Cloud, such as:
+
+* A central management UI and API
+* Integrated monitoring and alerting
+* Configuration recommendations
+
+ We encourage you to weigh your security requirements against Hybrid Cloud before inquiring about Private Cloud.
+
+If you are interested in using Qdrant Private Cloud, please [contact us](/contact-us/) for more information.
