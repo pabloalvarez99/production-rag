@@ -21,14 +21,17 @@ curl --fail --silent http://localhost:6333/readyz >/dev/null || {
   exit 1
 }
 
+docker compose build api
+docker compose run --rm api python -c "from importlib.metadata import version; import httpx; client=version('qdrant-client'); server=httpx.get('http://qdrant:6333/').json()['version']; assert client == server, f'Qdrant version mismatch: client={client} server={server}'"
+
 docker compose run --rm api python -m production_rag.ingest \
   --config configs/default.yaml \
   --source data/corpus \
   --embedder fake \
   --collection prag_demo \
   --recreate-collection
-docker compose up -d --build api
+docker compose up -d api
 
 printf '\nDemo ready: http://localhost:8000/\n'
 printf '1. Why does hybrid search use reciprocal rank fusion?\n'
-printf '2. What is the capital city of the Moon?\n'
+printf '2. Who won the Antarctic underwater chess championship?\n'

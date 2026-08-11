@@ -24,12 +24,15 @@ nothing about retrieval or answer quality.
 
 | Configuration | `hit_at_5` |
 | --- | --- |
-| Sparse | **0.820**<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=fake; n=60; date=2026-08-11; commit=79ef17b0883b</sub> |
-| Dense | **0.080**<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=fake; n=60; date=2026-08-11; commit=79ef17b0883b</sub> |
-| Hybrid | **0.680**<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=fake; n=60; date=2026-08-11; commit=79ef17b0883b</sub> |
-| Hybrid + rerank | **0.740**<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=fake; n=60; date=2026-08-11; commit=79ef17b0883b</sub> |
+| Sparse | **0.560**<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=none; n=60; date=2026-08-11; commit=04102b0dcf8d</sub> |
+| Dense | **0.060**<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=none; n=60; date=2026-08-11; commit=04102b0dcf8d</sub> |
+| Hybrid | **0.500**<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=none; n=60; date=2026-08-11; commit=04102b0dcf8d</sub> |
+| Hybrid + rerank | **0.500**<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=none; n=60; date=2026-08-11; commit=04102b0dcf8d</sub> |
 
-Comparison: **hybrid - sparse = -0.117** (95% CI -0.200 to -0.050; n=60).<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=fake; n=60; date=2026-08-11; commit=79ef17b0883b</sub>
+Comparison: **Directional only:** hybrid - sparse = -0.050 (95% CI -0.133 to +0.017; n=60); **not reportable** — ci95 includes zero.<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=none; n=60; date=2026-08-11; commit=04102b0dcf8d</sub>
+
+Bootstrap reproducibility: seed `**20260811**<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=none; n=60; date=2026-08-11; commit=04102b0dcf8d</sub>`,
+`**10000**<br><sub>⚠️ **FAKE PROVIDERS — plumbing check only, not a quality claim.** embedder=fake; LLM=fake; judge=none; n=60; date=2026-08-11; commit=04102b0dcf8d</sub>` paired resamples.
 
 The next measurement action is to run the same scorecard contract with named real
 providers and replace the fixture artefact; until that artefact exists, this table remains

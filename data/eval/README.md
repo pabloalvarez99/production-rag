@@ -25,6 +25,7 @@ each adversarial category: `lexical_only`, `paraphrase_only`, `multi_source`,
 the answer; `corpus-dist-011` replaces it with a measured rank-1/rank-2 genuine
 competition rather than reusing the retired id or padding with a weak case.
 
+<!-- provenance-allow: explanatory-example: random-coverage arithmetic explains corpus discrimination and is not a measured system result -->
 The larger corpus exists to make source-level `hit@5` discriminating. With nine
 sources, five random distinct results hit a labelled source about 56% of the
 time; with 3,067 source documents the same random coverage is about 0.16%.
@@ -176,6 +177,7 @@ as the coarse check that survives the next re-chunk.
 
 ## Composition targets
 
+<!-- provenance-allow: historical-measurement: target mix fixed for the original seed-set design, not the current corpus scorecard -->
 | Category | Share | What it catches |
 |---|---|---|
 | `conceptual` | 40% | paraphrase; the case dense retrieval should win |
@@ -196,6 +198,7 @@ quality claim.
 
 Measured on the committed file, not aspired to:
 
+<!-- provenance-allow: historical-measurement: acceptance-time seed-set composition retained to explain why the golden set was expanded -->
 | Category | Target | Seed set | Reading |
 |---|---|---|---|
 | `conceptual` | 40% | 7 / 17 (41%) | on target |
