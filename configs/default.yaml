@@ -4,20 +4,24 @@
 # key existing here is not a promise that the runtime reads it yet. Each block
 # below carries a `status:` comment; docs/architecture.md holds the same table.
 #
-# Status after M3 (cross-encoder rerank):
+# Status after M4 (grounded generation + POST /v1/query):
 #   ingest            LIVE
 #   ingest.sparse     LIVE   BM25 vectors are written at ingest time
 #   qdrant            LIVE   (dense + sparse vectors, payload indexes, consistency)
-#   retrieval         LIVE   read by `python -m production_rag.retrieve`
+#   retrieval         LIVE   read by `python -m production_rag.retrieve` and by
+#                            the query graph behind POST /v1/query
+#   retrieval.filters DECLARED  no endpoint or CLI accepts `filters` yet
 #   rerank            LIVE   opt-in; the `fake` provider always runs offline,
 #                            `local`/`cohere` are the ones that mean anything
-#   generation        M4
+#   generation        LIVE   answers with [n] citations, or an explicit refusal;
+#                            the `fake` provider exercises the contract offline,
+#                            `openai` is the one that produces a real answer
 #   evals             M6     thresholds declared; only a hit@k script exists
 #   observability     M5     (logging block is live)
 #
-# Hybrid *retrieval* runs, and so does reranking. *Answering* does not: there is
-# no query endpoint, no LLM call, no citation rendering. Retrieval is a batch
-# command that prints ranked passages. See the roadmap in README.md.
+# The whole path runs: ingest, hybrid retrieval, rerank, generation with
+# citations. What is NOT here is measured quality — no faithfulness number, no
+# citation-precision number, no Ragas harness. That is M6. See docs/evaluation.md.
 #
 # Precedence (lowest to highest):
 #   1. this file
@@ -115,9 +119,9 @@ ingest:
 # ---------------------------------------------------------------------------
 # Retrieval — hybrid dense + sparse, fused with RRF.
 # status: LIVE (M2). Read by `python -m production_rag.retrieve` (make
-# retrieve-fake / scripts/retrieve.ps1). No HTTP query endpoint reads it yet —
-# that is M4. Downstream of fusion there is now a rerank stage (M3, opt-in, see
-# the `rerank` block); there is still no answer generation.
+# retrieve-fake / scripts/retrieve.ps1) and, from M4, by the query graph behind
+# POST /v1/query. Downstream of fusion there is a rerank stage (M3, opt-in, see
+# the `rerank` block) and then generation (M4, see the `generation` block).
 # ---------------------------------------------------------------------------
 retrieval:
   # dense  — embedding kNN only; the honest setting when the collection has no
@@ -153,8 +157,12 @@ retrieval:
   # tokens in the generation prompt.
   return_payload_fields: [doc_id, chunk_id, title, source_path, heading_path, text]
   filters:
-    # status: M4 — the allowlist guards an HTTP surface that does not exist yet.
-    # Metadata filters the query API is allowed to accept, as an allowlist.
+    # status: DECLARED ONLY. Nothing reads this yet. Neither POST /v1/query nor
+    # the CLI accepts a `filters` field — a request carrying one is rejected with
+    # 422 as an unknown field, which is the honest answer while the allowlist is
+    # unwired: silently dropping a filter would answer a different question than
+    # the one asked. When it lands, keep it in sync with qdrant.payload_indexes;
+    # an unindexed filter degrades to a payload scan.
     allowed_fields: [source, title, tags, created_at]
 
 # ---------------------------------------------------------------------------
@@ -228,35 +236,82 @@ rerank:
   fail_open: true
 
 # ---------------------------------------------------------------------------
-# Generation — answer synthesis with mandatory citations.  status: M4 — not wired.
+# Generation — answer synthesis with mandatory citations.
+# status: LIVE (M4). Read by the query graph behind POST /v1/query and by
+# `python -m production_rag.query`. This is the first stage that returns prose
+# rather than passages, which is the point at which the system becomes able to be
+# confidently wrong — hence the citation contract and the refusal edge below.
+# Rationale: docs/adr/0005-grounded-generation.md.
+#
+# Honest scope, third instance of the same pattern in this file: the generation
+# CONTRACT runs anywhere, including with the `fake` provider on a laptop with no
+# credentials. Answer QUALITY exists only on `openai`. Same distinction as the
+# fake embedder and the fake reranker, one stage later.
+#
+# Still NOT here: any measured answer quality. No faithfulness number, no
+# citation-precision number, no judge. That is M6 — docs/evaluation.md.
 # ---------------------------------------------------------------------------
 generation:
+  # openai | fake
+  #   openai  the real path: a hosted model reads the passages and answers.
+  #   fake    deterministic extractive stitching of the top passages, emitting
+  #           [n] markers that resolve. Offline contract double, NOT a quality
+  #           claim: it does not reason and cannot synthesise across passages.
   provider: openai
   model: gpt-4o-mini
+  # Env var *name*, never the value.
   api_key_env: OPENAI_API_KEY
   temperature: 0.1 # near-deterministic: this is extraction, not authoring
   max_output_tokens: 800
   # Budget for retrieved context. Chunks are dropped from the tail once this
-  # is exceeded, so retrieval order is also truncation order.
+  # is exceeded, so retrieval order is also truncation order — which makes the
+  # rerank stage decide what the model may cite, not merely in what order.
   max_context_tokens: 6000
   timeout_seconds: 60
   max_retries: 3
   stream: true
+  # Note there is deliberately no `fail_open` here, unlike the rerank block. A
+  # failed reranker leaves a result that is correct in kind and ordered worse; a
+  # failed generator leaves nothing to substitute except an ungrounded answer,
+  # which is the exact thing this stage exists to refuse. Generation failures
+  # surface as 503 after the bounded retries above.
 
   citations:
     enabled: true
     # Inline markers referencing the ordinal of a retrieved chunk, e.g. [2].
+    # The ordinal is scoped to ONE request — it indexes the passages that
+    # request sent, and identifies nothing outside the response. What is durable
+    # is the chunk_id inside the resolved Citation. See docs/data-model.md.
+    #
+    # A marker outside the supplied range (e.g. [9] when 8 passages were sent)
+    # is stripped from the answer text and recorded in `invalid_markers` on the
+    # library result, never rendered as a dead link. Surviving markers are not
+    # renumbered.
     style: bracketed_index
+    # An answer with no resolvable citation is not served as prose: it is either
+    # the model ignoring its context or a claim the context does not support.
     require_citation: true
     # When the context does not support an answer, say so instead of guessing.
     # This is the single highest-leverage setting for perceived quality.
+    #
+    # Enforced by the GRAPH, not by the prompt: when nothing clears the evidence
+    # bar the generate node is never entered and no token is spent. Asking the
+    # model to refuse when appropriate would delegate the judgement to the
+    # component whose known failure mode is exactly that judgement.
     refuse_without_evidence: true
+    # Clients branch on the `refused` boolean in the response, never on this
+    # string — it is config and it is meant to be changed per deployment.
     refusal_message: >-
       I could not find support for that in the indexed documents.
 
   prompt:
-    system_path: configs/prompts/system.md # created by A1's prompt work
+    # The system prompt is a FILE, not a string in code: changing it changes
+    # system behaviour and belongs in a diff with an eval run attached.
+    system_path: configs/prompts/system.md
     include_heading_path: true
+    # Deliberately above rerank.top_k (6), so the rerank cut binds when that
+    # stage is on and this budget binds when it is off (fusion returns
+    # retrieval.top_k = 12).
     max_chunks_in_prompt: 8
 
 # ---------------------------------------------------------------------------

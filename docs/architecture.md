@@ -1,23 +1,37 @@
 # Architecture
 
-Status: **M3 (cross-encoder rerank) in progress.** Last updated: 2026-08-10.
+Status: **M4 (grounded generation + `POST /v1/query`).** Last updated: 2026-08-10.
 
 M0 shipped the walking skeleton: package, config, health and readiness probes,
 container stack. M1 added the offline ingest path — walk, chunk, embed (dense),
 upsert into Qdrant. M2 added **retrieval**: sparse/BM25 vectors written alongside
 the dense ones at ingest time, a dense branch and a sparse branch queried
-together, and reciprocal rank fusion over the two result lists. M3 adds
-**reranking**: a cross-encoder pass over the fused candidates that reorders them
-before anything downstream sees them, opt-in, fail-open, with a deterministic
-offline provider so the stage stays runnable with no credentials.
+together, and reciprocal rank fusion over the two result lists. M3 added
+**reranking**: a cross-encoder pass over the fused candidates, opt-in, fail-open,
+with a deterministic offline provider so the stage stays runnable with no
+credentials.
 
-What M3 does **not** add: generation. There is no `POST /v1/query`, no LLM call,
-no answer, no citation rendering. Retrieval — now with rerank — is exercised as a
-batch command that prints ranked hits; the HTTP query surface and the generation
-stages below are still design. No retrieval quality number quoted anywhere in
-this repo has been measured against a semantically meaningful embedding — see
-[the fake embedder](#two-embedders-one-path) and, for the same caveat one stage
-later, [the fake reranker](#three-rerank-providers-one-interface).
+M4 closes the path. The stages above are now orchestrated as a **LangGraph
+graph** ([ADR 0002](adr/0002-langgraph-query.md), Accepted) behind
+**`POST /v1/query`**, and the graph ends in **grounded generation**: an answer
+whose every claim carries an inline `[n]` marker resolved back to a retrieved
+chunk, or — when no chunk clears the evidence bar — an explicit **refusal with
+no LLM call at all** ([ADR 0005](adr/0005-grounded-generation.md)). Retrieval
+returns passages; M4 is the first milestone that returns prose, which is why the
+citation contract and the refusal edge are part of the design rather than a
+prompt detail.
+
+Ownership note: this document describes the contract the M4 query path
+implements. The library (`production_rag.generation`, the graph) is A1's; the
+HTTP surface is A3's; this file, the runbook, the data model and the ADRs are
+A2's.
+
+What M4 does **not** add: measured quality. There is still no faithfulness
+number, no citation-precision number and no Ragas harness — that is M6, and no
+number in this repository has been produced by one. Nor has any retrieval number
+here been measured against a semantically meaningful embedding: see
+[the fake embedder](#two-embedders-one-path), [the fake reranker](#three-rerank-providers-one-interface)
+and, one stage later again, [the fake generator](#two-generation-providers-one-contract).
 
 ## Overview
 
@@ -49,6 +63,11 @@ footprint stays at two containers.
 | `production_rag.ingest` | Offline ingest job: walk, chunk, embed, upsert. New in M1; writes sparse vectors too from M2. | A1 |
 | `production_rag.retrieval` | Embedders, Qdrant store, and — new in M2 — the sparse encoder, the hybrid searcher and RRF fusion. | A1 |
 | `production_rag.rerank` | New in M3: the cross-encoder rerank stage and its three providers (`fake`, `local`, `cohere`), plus the fail-open wrapper. | A1 |
+| `production_rag.generation` | New in M4: prompt assembly under a context budget, the LLM providers (`fake`, `openai`), `[n]` marker resolution into `Citation` objects, and the refusal path. | A1 |
+| `production_rag.graph` | New in M4: the LangGraph `StateGraph` that wires normalise → retrieve → fuse → rerank → generate → cite, the rerank bypass edge and the refusal edge. Nodes are adapters; no business logic. | A1 |
+| `production_rag.query_pipeline` | New in M4: the one public entry point — `run_query()` for a one-shot call, `QueryPipeline` for a process that serves many. Everything under `graph/` and `generation/` is an implementation detail of it. | A1 |
+| `production_rag.query` | New in M4: the batch CLI over that entry point, with the same stdout-JSON and graded-exit-code contract as ingest and retrieve. | A3 |
+| `POST /v1/query` | New in M4: the HTTP surface — request validation, provider selection, correlation id, and a narrow response projection. | A3 |
 | `qdrant` container | Dense and sparse vectors plus chunk payloads in one collection. Pinned to `qdrant/qdrant:v1.13.2`. | A2 |
 | `configs/default.yaml` | Declarative runtime config: ingest, retrieval, rerank, generation, qdrant, evals, observability. | A2 |
 | `data/` | `raw/` (corpus), `processed/` (derived chunk artifacts, gitignored), `eval/` (golden set). | A2 |
@@ -57,22 +76,106 @@ footprint stays at two containers.
 
 Owners were `K1`/`K2` through M0; the same two seats are `A1`/`A2` from M1.
 
-## Request flow (query path) — partly implemented
+## Request flow (query path) — live as of M4
 
-> Stages 1–4 (normalise, dense + sparse retrieval, RRF fusion, rerank) run as of
-> M3, but as a **batch command**, not as an HTTP endpoint. Stages 5–6 (generate,
-> cite) and the `POST /v1/query` surface itself are unbuilt. Treat every stage
-> below as design until the roadmap in the README marks its milestone done.
-
-1. Client calls `POST /v1/query` with a natural-language question. *(M4)*
+1. Client calls `POST /v1/query` with a natural-language question. *(live, M4)*
 2. The query is embedded (dense) and tokenized (sparse, BM25-style). *(live, M2)*
 3. Hybrid retrieval runs against Qdrant: dense vector search fused with
    sparse vector search (see [ADR 0001](adr/0001-hybrid-qdrant.md)). *(live, M2)*
 4. Fused candidates are optionally reranked by a cross-encoder, fail-open (see
    [ADR 0004](adr/0004-rerank-cross-encoder.md)). *(live, M3 — opt-in)*
-5. A generation call answers with citations to the retrieved chunks. *(M4)*
-6. The query pipeline is orchestrated as a LangGraph graph so steps are
-   observable and individually testable (see [ADR 0002](adr/0002-langgraph-query.md)). *(M4)*
+5. A generation call answers with inline `[n]` citations to the retrieved
+   chunks, or the request refuses without calling the model when nothing clears
+   the evidence bar (see [ADR 0005](adr/0005-grounded-generation.md)). *(live, M4)*
+6. The pipeline is orchestrated as a LangGraph graph so stages are observable
+   and individually testable (see [ADR 0002](adr/0002-langgraph-query.md)). *(live, M4)*
+
+The batch retrieve command from M2/M3 has not gone anywhere: it is still the way
+to inspect ranked passages without spending a generation call, and it is still
+the surface the eval script drives.
+
+### The query graph (M4)
+
+One node per stage, one typed state object threaded through, and two conditional
+edges. The edges are the whole reason this is a graph rather than a function
+chain — a bypass when reranking does not happen, and a refusal that leaves the
+graph before the LLM is ever constructed.
+
+```
+                    POST /v1/query  { question, mode?, rerank?, llm?, debug? }
+                              │
+                              ▼
+                    ┌───────────────────────┐
+                    │ normalise             │  trim, reject empty, bind
+                    │                       │  request id into the log context
+                    └──────────┬────────────┘
+                               ▼
+                    ┌───────────────────────┐
+                    │ retrieve              │  dense + sparse branches, M2
+                    │                       │  mode override honoured here
+                    └──────────┬────────────┘
+                               ▼
+                    ┌───────────────────────┐
+                    │ fuse                  │  RRF, k = 60, rank-based
+                    └──────────┬────────────┘
+                               │
+                 rerank off ───┴─── rerank on
+                  (bypass edge)      │
+                        │            ▼
+                        │  ┌───────────────────────┐
+                        │  │ rerank                │  cross-encoder, M3
+                        │  │                       │  fail-open → bypass edge
+                        │  └──────────┬────────────┘
+                        └──────┬──────┘
+                               ▼
+                    ┌───────────────────────┐
+                    │ gate — is there        │  evidence check, no LLM yet
+                    │ supporting evidence?   │
+                    └───┬───────────────┬────┘
+                        │ no            │ yes
+        (refusal edge)  │               ▼
+                        │    ┌───────────────────────┐
+                        │    │ generate              │  budgeted context,
+                        │    │                       │  temperature 0.1,
+                        │    │                       │  [n] markers required
+                        │    └──────────┬────────────┘
+                        │               ▼
+                        │    ┌───────────────────────┐
+                        │    │ cite                  │  resolve [n] → chunk;
+                        │    │                       │  strip + record the rest
+                        │    └──────────┬────────────┘
+                        │               │
+                        │        nothing citable? ──┐  (second refusal check)
+                        ▼               ▼           │
+              ┌─────────────────────────────────────┴─┐
+              │ respond                               │
+              └──────────────────┬────────────────────┘
+                                 ▼
+   HTTP  { answer, refused, refusal_reason, citations[] }
+   lib   + hits_used, hits_retrieved, model, mode, collection, embedded_model,
+           rerank{…}, invalid_markers[], uncited_claims[], latency_ms{per node}
+```
+
+The refusal edge is the design point worth reading twice: **it skips the
+generate node entirely.** The model is not asked to decide whether it has
+evidence — the system decides, before spending a token. See
+[abstention](#abstention--the-refusal-edge-never-reaches-the-model).
+
+There are **two** refusal points, not one: before the call (no evidence to
+ground anything in) and after it (nothing in the answer resolved to a chunk, or
+the model emitted the abstention sentinel). Both produce a code from a closed
+set, which is what lets an operator alert on one and an eval group by it.
+
+Node timings are fields on the state object, which is what populates the
+per-node `latency_ms` breakdown on the library result — the first thing the
+[runbook](runbook.md) tells an operator to read when a query is slow.
+
+The HTTP response is deliberately a **narrower projection** of that result:
+answer, citations, `refused`, `refusal_reason`, and nothing else. Internal
+counts, timings, the collection name and the embedding model stay on the library
+result and in the logs, where they are keyed by the request id. A public
+endpoint that reports its own collection name and stage latencies is describing
+its interior to anyone who asks.
 
 ### Stage pipeline
 
@@ -118,7 +221,7 @@ Owners were `K1`/`K2` through M0; the same two seats are `A1`/`A2` from M1.
         │                              │  chunk_id + source_path
         └──────────────┬───────────────┘
                        ▼
-   { answer, citations[], usage, trace_id, latency_ms }
+   { answer, refused, refusal_reason, citations[] }
 ```
 
 Each numbered stage is one LangGraph node with its own timing, which is what
@@ -383,6 +486,251 @@ dense-only. A hybrid system that quietly stops being hybrid is the failure mode
 worth spending an error message on, and `retrieval.mode: dense` is how you ask
 for dense-only on purpose.
 
+## Generation flow (M4) — live
+
+Everything above produces *passages*. This is the stage that produces *prose*,
+and it is the first place the system can be confidently wrong. The decision and
+its alternatives are in [ADR 0005](adr/0005-grounded-generation.md); the
+mechanics are here.
+
+```
+  ranked hits (rerank order if it ran, else fusion order)
+        │
+        ▼
+  ┌──────────────────────────────────────────────┐
+  │ 1. BUDGET — take hits in order until either  │  max_chunks_in_prompt = 8
+  │    max_chunks_in_prompt or                   │  max_context_tokens = 6000
+  │    max_context_tokens is hit; the tail is    │  retrieval order IS
+  │    dropped and the count reported            │  truncation order
+  └───────────────────┬──────────────────────────┘
+                      ▼
+  ┌──────────────────────────────────────────────┐
+  │ 2. RENDER — number the survivors [1]…[n] in  │  heading_path included
+  │    that same order, prepend the system       │  when configured; nothing
+  │    prompt from configs/prompts/system.md     │  else from the payload
+  └───────────────────┬──────────────────────────┘
+                      ▼
+  ┌──────────────────────────────────────────────┐
+  │ 3. GENERATE — temperature 0.1, bounded       │  fake | openai
+  │    output, bounded retries, timeout          │  extraction, not authoring
+  └───────────────────┬──────────────────────────┘
+                      ▼
+  ┌──────────────────────────────────────────────┐
+  │ 4. RESOLVE — each [n] in the answer maps to  │  out-of-range marker:
+  │    the nth PROMPT BLOCK → Citation objects,  │  stripped from the text,
+  │    in first-appearance order                 │  recorded in
+  └───────────────────┬──────────────────────────┘  invalid_markers
+                      ▼
+  ┌──────────────────────────────────────────────┐
+  │ 5. CHECK — nothing citable, or the abstain   │  refusal_reason:
+  │    sentinel, or an empty answer → refuse     │  no_citations |
+  └───────────────────┬──────────────────────────┘  model_abstained |
+                      ▼                             empty_answer
+   { answer, refused, refusal_reason, citations[…] }
+```
+
+### The `[n]` citation contract
+
+The number in `[3]` is an **ordinal into the context this request assembled** —
+the third passage the prompt contained — and nothing else. Not a chunk id, not a
+rank in the collection, not a stable identifier across requests. Two consequences
+follow, and both are load-bearing:
+
+- **Resolution is a lookup, not a heuristic.** The request knows exactly which
+  chunks it sent and in what order, so `[3]` resolves deterministically to one
+  `chunk_id`. No similarity matching between a generated sentence and a passage
+  is involved anywhere — that would attribute fluency rather than provenance.
+- **Markers are meaningless outside their response.** `[3]` from yesterday's
+  answer does not identify anything today. What is durable is the resolved
+  `Citation`: `chunk_id`, `source_path`, `title`, `heading_path`, and the quoted
+  text. Clients store citations, never markers.
+
+Resolution runs against the **numbered blocks of the rendered prompt**, not
+against the retrieval result. Those two lists differ whenever the context budget
+truncated, and mapping against the longer one would shift every marker by however
+many chunks did not fit — silently, and in the direction that makes citations
+look fine.
+
+Each resolved marker becomes one `Citation` in `citations[]`, ordered by first
+appearance in the answer, deduplicated — a passage cited three times appears
+once. The exact field list is in the [data model](data-model.md#citation).
+
+**Out-of-range markers are stripped from the text and recorded.** If six blocks
+were sent and the model writes `[7]`, the marker is removed from the answer and
+listed in `invalid_markers` on the library result. Leaving it in would show a
+reader a footnote that goes nowhere, which reads as *more* grounded than an
+uncited sentence rather than less. Recording it is what makes "this model invents
+citations" a measurable claim rather than an impression.
+
+**Surviving markers are not renumbered.** An answer that cites only `[3]` keeps
+`[3]` in its text and carries marker 3 in its citation list. Compacting to `[1]`
+would make the answer stop matching the prompt that produced it, and lining those
+two up is where every debugging session on this path starts.
+
+`uncited_claims` reports the other direction: sentences long enough to be a claim
+(24 characters or more) carrying no marker at all. **Reported, never fatal** —
+refusing an answer because one transition sentence lacks a marker produces a
+guardrail with a false-positive rate high enough that someone switches it off,
+which leaves the system with none. It is citation coverage measured on every
+request rather than sampled by an offline judge.
+
+A `require_citation: true` deployment does treat an answer with **no** resolvable
+citation at all as unsupported: it is refused rather than served. An entirely
+uncited answer from a grounded system is either the model ignoring its context or
+a claim the context does not support, and neither is worth serving.
+
+### Abstention — the refusal edge never reaches the model
+
+When no retrieved chunk clears the evidence bar, the graph takes the refusal
+edge: **the generate node is not entered and no provider call is made.** The
+response is the configured `refusal_message` with `refused: true`,
+`citations: []`, and a `refusal_reason` from a closed set.
+
+The design point is *who decides*. Asking the model to refuse when appropriate
+delegates the judgement to the component whose documented failure mode is
+exactly that judgement — a fluent, plausible answer built from parametric memory
+and the topical vocabulary of whatever passages it was handed. Deciding in the
+graph makes the refusal deterministic, free, and testable without a provider.
+
+There are two checks, and only the first one saves a call:
+
+| Situation | `refusal_reason` | LLM called |
+|---|---|---|
+| Retrieval returns nothing at all | `no_evidence` | no |
+| Every hit is filtered out by `retrieval.score_threshold` | `no_evidence` | no |
+| The model emits the `INSUFFICIENT_CONTEXT` sentinel, anywhere in its text | `model_abstained` | yes |
+| Nothing in the answer resolves to a block, with `require_citation: true` | `no_citations` | yes |
+| The model returns only whitespace | `empty_answer` | yes |
+| Hits exist and the answer carries at least one resolvable marker | — | yes, answer served |
+| Some markers valid, some out of range | — | yes, answer served; invalid ones stripped and recorded |
+
+The sentinel check matches the token **anywhere** in the text, not only as the
+whole message: models routinely wrap a sentinel in a polite sentence, and
+treating that as an answer serves the user a refusal dressed as a result.
+
+The reason codes are a closed set (`no_evidence`, `model_abstained`,
+`no_citations`, `empty_answer`), which is what lets an operator alert on one and
+an eval group by them. The user-facing message is config and can change without
+invalidating a dashboard — clients branch on `refused` and `refusal_reason`,
+never on the message string.
+
+`refuse_without_evidence: false` disables only the *pre-call* check. It is an
+escape hatch for a deployment that wants a general-knowledge fallback, and taking
+it gives up the central promise of the system, which is why it is on by default.
+
+A refusal is a **200 with `refused: true`**, not an error status. Nothing failed:
+the system was asked something the corpus does not cover and said so. Encoding
+that as 4xx/5xx would make a correct outcome indistinguishable from an outage in
+every dashboard the service ever gets.
+
+The cost of this design is stated plainly in
+[ADR 0005](adr/0005-grounded-generation.md): a question whose supporting chunk
+was never retrieved now yields a refusal, so **answer-path recall is capped by
+retrieval recall**. That is the correct failure — but it means a spike in
+refusals is a retrieval investigation, not a prompt investigation.
+
+### Two generation providers, one contract
+
+| `--llm` / the `llm` request field | Model | Needs | What it measures |
+|---|---|---|---|
+| `fake` *(default)* | none — deterministic extractive stitching over the supplied passages, pure Python | nothing: no key, no network, no spend | **nothing about answer quality.** The contract only |
+| `openai` | `generation.model` (`gpt-4o-mini`) | `OPENAI_API_KEY`, HTTPS per query, billed per token | real answer quality on this corpus |
+
+The default is `fake` on **both** the endpoint and the CLI, deliberately: a caller
+that forgets to choose gets the offline path rather than a bill. The corollary is
+that an answer is plumbing unless someone asked for `openai` — a demo that forgets
+the flag is demonstrating the schema.
+
+Retries, timeouts and status-code classification on the hosted path are the
+OpenAI SDK's job (`max_retries`, `timeout_seconds` are handed to the client
+rather than reimplemented around it); the SDK already knows which failures are
+worth repeating.
+
+`fake` is the third instance of the same pattern in this repository, and it
+carries the same warning as the fake embedder and the fake reranker. It composes
+an answer from the top passages and emits `[n]` markers that resolve, so the
+whole contract is genuinely exercised offline: budgeting, prompt rendering,
+marker resolution, invalid-marker stripping, both refusal checks, the response
+schema, the per-node timings, the HTTP surface. What it does not do is *reason*. It
+cannot synthesise across two passages, it cannot decline a question its passages
+technically mention, and its prose is not prose anyone should read.
+
+Stated plainly: **the generation contract is live everywhere; answer quality
+exists only on `openai`.** No answer produced by `fake` is evidence of anything
+except that the wiring holds, and no faithfulness claim appears in this
+repository at all — that needs the M6 judge (see [evaluation](evaluation.md)).
+
+### Context budget: retrieval order is truncation order
+
+`generation.max_chunks_in_prompt` (8) and `generation.max_context_tokens` (6000)
+both cut from the **tail**, in the order the retrieval path produced. Whichever
+binds first wins. Two things follow:
+
+- The reranker's job is now doubly load-bearing. It does not merely order what
+  the model reads; it decides what the model reads *at all*, because a passage
+  pushed past the budget is not in the prompt. A rerank that ran on a 40-hit
+  candidate window and kept 6 has already made the truncation decision.
+- `max_chunks_in_prompt` (8) sits deliberately above `rerank.top_k` (6) so the
+  rerank cut is the binding one when the stage is on, and the budget is the
+  binding one when it is off (fusion returns `retrieval.top_k`, 12).
+
+Token counts use the same `len(text) / 4` estimate the ingest payload carries;
+no tokeniser is loaded. It is a budget guard, not an accounting figure — a few
+percent off costs a little unused headroom, while importing a tokeniser to be
+exact costs a dependency and a model download.
+
+One block always survives. The budget check is skipped for the first block, so a
+single oversized chunk is sent rather than producing an empty context and a
+refusal that blames retrieval for a chunking decision. Truncation is logged
+(`context_truncated`, with kept and dropped counts) and the library result
+carries `hits_used` alongside `hits_retrieved`.
+
+### Request id — one id, every stage, every log line
+
+The correlation id bound by the middleware (`X-Request-ID`, replaced with a
+fresh UUID4 when absent or malformed) is bound into the structlog contextvars at
+the `normalise` node and is therefore on **every** line the request emits: the
+Qdrant queries, the rerank call, the generation call, the citation resolution,
+and the access log. It comes back on the `X-Request-ID` response header.
+
+It is deliberately **not** in the response body. The body is the answer and its
+evidence; a caller already holds the id on the response it received, and every
+piece of interior detail kept out of the payload is one that cannot be read off a
+public endpoint.
+
+That single id is what makes an incident tractable in M4 specifically. Before
+generation, one question was one Qdrant round trip; now one question fans out
+into an embedding call, two searches, a rerank provider call and an LLM call,
+each with its own latency and its own way of failing. Without one id on every
+line, "why was this answer bad" is a guess. Tracing proper — spans, a Langfuse
+or OTel backend — is M5; the id is the seam it will attach to.
+
+### No secret ever reaches a response or a log
+
+Three rules, all of them already enforced by existing machinery and all of them
+newly relevant now that a provider call sits on the request path:
+
+1. **Keys are read from the environment by name only.** `configs/default.yaml`
+   holds `api_key_env: OPENAI_API_KEY` — the *name* of a variable, never a
+   value. `Settings.safe_dump()` is the only sanctioned way to render settings
+   and it masks; a test asserts the masking.
+2. **Prompt and passage text are not logged at INFO.**
+   `observability.logging.log_prompts` and `log_retrieved_text` are both `false`
+   by default. The prompt now contains customer corpus text verbatim, so a log
+   aggregator with these switched on becomes a copy of the corpus with none of
+   its access controls. Turn them on for a local debugging session; never in a
+   deployment.
+3. **Provider errors are summarised, not echoed.** An upstream error body can
+   contain the request that produced it, which for a generation call is the
+   whole prompt. What reaches the client is a status and a stable message; the
+   detail stays server-side, keyed by the request id.
+
+A refusal and its reason are reported in the response; truncation, invalid
+markers and uncited claims are reported on the library result and in the logs.
+Credentials, prompts and raw provider payloads are reported nowhere. The CLI
+follows the same rule — a failure prints the exception *type*, never the provider
+message, because an SDK error can carry the request that caused it.
+
 ## Ingest flow (offline path) — M1
 
 The ingest job is a batch process, not an endpoint. It is invoked from the
@@ -463,19 +811,21 @@ only stage in the system that spends money per document, which is why the
 content hash and the incremental skip exist before the embed call rather than
 after it.
 
-## What is live in M3 vs declared-only
+## What is live in M4 vs declared-only
 
 `configs/default.yaml` is deliberately broader than what the code consumes.
 
-| Config block | State after M3 |
+| Config block | State after M4 |
 |---|---|
 | `ingest` (walk, chunking, embedding, incremental) | live |
 | `ingest.sparse` (BM25 k1/b, lowercase, stopwords) | **live** — vectors are written at ingest |
 | `qdrant` (collection, dense + sparse vectors, payload indexes, write consistency) | live |
-| `retrieval` (mode, top-k per branch, RRF, threshold, payload fields) | **live** — read by the retrieve command |
-| `retrieval.filters.allowed_fields` | declared only — the filter allowlist belongs to the HTTP surface (M4) |
-| `rerank` (enabled, provider, input_top_k, top_k, timeout, fail_open) | **live** — read by the retrieve command. Ordering quality is real only on `local` / `cohere`; the `fake` provider exercises the stage, not relevance |
-| `generation`, `citations` | declared only — M4 |
+| `retrieval` (mode, top-k per branch, RRF, threshold, payload fields) | **live** — read by the retrieve command and by the query graph |
+| `retrieval.filters.allowed_fields` | declared only — `POST /v1/query` accepts no `filters` field yet, so there is nothing to enforce the allowlist against. The keys stay because the payload indexes that would make a filter cheap already exist |
+| `rerank` (enabled, provider, input_top_k, top_k, timeout, fail_open) | **live** — read by the retrieve command and by the query graph. Ordering quality is real only on `local` / `cohere`; the `fake` provider exercises the stage, not relevance |
+| `generation` (provider, model, temperature, budgets, timeout, retries, stream) | **live** — read by the query path. Answer quality is real only on `openai`; the `fake` provider exercises the contract, not the answer |
+| `generation.citations` (style, require_citation, refuse_without_evidence, refusal_message) | **live** — `[n]` markers are resolved and the refusal edge is taken from these keys |
+| `generation.prompt` (system_path, include_heading_path, max_chunks_in_prompt) | **live** — the system prompt is a file under `configs/prompts/`, not a string in code |
 | `evals` | thresholds declared; a source-level `hit@k` script exists, the Ragas harness does not — M6 |
 | `observability.tracing` | declared only — M5 |
 
@@ -510,9 +860,33 @@ on the collection, or a reranker that was never installed) aborts; an *empty
 result from a working capability* is data; a *failed improvement* over a result
 that already exists degrades and says so.
 
+### Query-path failure behaviour (M4)
+
+Everything in the retrieval table above still applies — the query path runs those
+stages. What follows is what the HTTP surface and the generation stage add.
+
+| Failure | Behaviour | Rationale |
+|---|---|---|
+| Empty or whitespace-only question | 422, no retrieval, no LLM call | a bad request is not an outage; fail before spending anything. Strings are stripped first, so `"   "` is empty |
+| Unknown field in the request body | 422 | `extra="forbid"`: a misspelled control must not silently fall back to a default and answer a different question than the one asked |
+| Nothing clears the evidence bar | 200, `refused: true`, `refusal_reason: no_evidence`, no LLM call | the corpus not covering a question is a correct outcome, not an error status |
+| Model emits an out-of-range `[n]` | marker stripped from the answer, recorded in `invalid_markers`, answer served | a dead citation link is worse than no marker; recording it makes it measurable |
+| Model emits no resolvable citation at all, `require_citation: true` | 200, `refused: true`, `refusal_reason: no_citations` | an uncited answer from a grounded system is either an ignored context or an unsupported claim |
+| Generation provider 429 / timeout | the SDK's bounded retry (`max_retries`, `timeout_seconds`), then the request fails | unlike the reranker there is nothing to fall back to: every available fallback is an ungrounded answer |
+| Generation provider returns an error body | the failure surfaces as a status and a stable message; the provider detail stays in the server logs, and the CLI prints only the exception type | an upstream error body can quote the request that caused it, which here is the entire prompt |
+| Qdrant unreachable during a query | the request fails; no LLM call | answering with no context is exactly the failure mode ADR 0005 exists to prevent |
+| `openai` selected with no `OPENAI_API_KEY` | `LLMError` before any query runs | a missing credential is a configuration error; falling back to `fake` would fabricate an answer |
+| The query pipeline module is absent from the checkout | 503 from the endpoint | a split-milestone checkout fails honestly instead of growing a second implementation inside the route |
+
+The generation stage is deliberately **not** fail-open, and that is the one place
+M4 departs from the reranker's posture. A failed reranker leaves a result that is
+correct in kind and merely ordered worse. A failed generator leaves nothing that
+can be substituted — every available fallback is an answer without grounding,
+which is the thing the milestone is built to refuse.
+
 ## Deployment shape
 
-Local development is the only target through M3 and it is `docker compose up -d
+Local development is the only target through M4 and it is `docker compose up -d
 --build`. The compose file is written to be promotion-friendly: pinned image
 tags, healthchecks on both services, named volume for the vector index, and
 secrets injected exclusively via environment (never files baked into images).
@@ -523,15 +897,28 @@ mount a warm cache — a cold container that downloads a cross-encoder on its fi
 request is a latency incident, not a cold start. See the
 [runbook](runbook.md#the-local-reranker-downloads-a-model).
 
-## Non-goals (M3)
+Two M4 notes. The API container now makes an outbound LLM call on the request
+path, so `OPENAI_API_KEY` has to reach it through the environment — never a file
+baked into an image, never a command-line flag that lands in `docker inspect`.
+And a request without authentication can now spend money per call, which is the
+reason rate limiting moves from "nice to have" to M7's headline: an unprotected
+`POST /v1/query` on a public address is a billing incident waiting for a crawler.
 
-- No query **endpoint**. Retrieval runs as a batch command; `POST /v1/query` is M4.
-- No generation, answers or citations (M4). Rerank reorders passages; it is the
-  last stage of retrieval, not the first stage of generation.
-- No measured retrieval quality number, before or after rerank. The `hit@k`
-  script reports what the current corpus, embedder and reranker produce; on the
-  `fake` embedder and the `fake` reranker that number is plumbing, not quality.
-- No authentication/authorization on the API.
+## Non-goals (M4)
+
+- No measured **answer** quality. Faithfulness, citation precision and refusal
+  accuracy all need an LLM judge over a real golden set — M6. The citation
+  mechanics make an unfaithful answer easy to *check*; they do not measure a
+  rate, and no such number appears in this repository.
+- No measured retrieval quality number either, before or after rerank. The
+  `hit@k` script reports what the current corpus, embedder and reranker produce;
+  on the `fake` embedder and the `fake` reranker that number is plumbing.
+- No query rewriting, no self-critique loop, no multi-hop. The graph has the
+  shape that would host them; it has no cycle today (see
+  [ADR 0002](adr/0002-langgraph-query.md)).
+- No conversational memory. Every query is independent; there is no session, no
+  history and no follow-up resolution.
+- No authentication/authorization on the API — and it now guards a paid path.
 - No horizontal scaling, no API gateway.
 - No GPU in the runtime path. The `local` cross-encoder is CPU-only by design.
 - Full observability stack is config-shaped but not wired.

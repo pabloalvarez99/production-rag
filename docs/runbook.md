@@ -214,8 +214,10 @@ with RRF, optionally reranks them with a cross-encoder (M3, off by default), and
 prints the hits.
 
 **It returns passages, not an answer.** There is no LLM call anywhere in this
-path and no citation rendering (M4). If you are looking for `POST /v1/query`, it
-does not exist yet. Reranking reorders passages; it does not answer.
+path and no citation rendering — reranking reorders passages, it does not answer.
+For an answer with citations, use [Query (M4)](#query-m4); this command remains
+the way to inspect what retrieval produced without spending a generation call,
+and it is what the eval script drives.
 
 The job is `python -m production_rag.retrieve`: flags map one-to-one onto the
 config keys, logs go to stderr, a single JSON object is the last line of stdout,
@@ -457,6 +459,239 @@ before quoting any sparse-branch number:
 make reingest-fake
 ```
 
+## Query (M4)
+
+M4 is the first surface that returns an **answer** rather than passages. Two ways
+in, one pipeline behind both:
+
+- `POST /v1/query` — the HTTP endpoint, for clients.
+- `python -m production_rag.query` — the batch CLI, for operators. Logs to
+  stderr, one JSON object as the last line of stdout, exit codes graded `0` ok /
+  `1` the run failed / `2` the invocation was wrong — the same contract as the
+  ingest and retrieve jobs.
+
+Prerequisites are the same as retrieval: the stack is up, and the collection was
+built by M2 or later with the embedder you intend to query with.
+
+### The endpoint
+
+```bash
+curl -s localhost:8000/v1/query \
+  -H 'content-type: application/json' \
+  -H 'X-Request-ID: local-debug-1' \
+  -d '{"question": "how does reciprocal rank fusion work"}' | jq
+```
+
+```powershell
+$body = @{ question = "how does reciprocal rank fusion work"; llm = "fake" } | ConvertTo-Json
+Invoke-RestMethod -Method Post http://localhost:8000/v1/query `
+    -ContentType 'application/json' -Body $body |
+    Select-Object answer, refused, refusal_reason
+```
+
+Request fields: `question` (required, 1–8000 characters, whitespace-stripped),
+`mode` (`dense` / `sparse` / `hybrid`), `rerank` (`off` / `auto` / `fake` /
+`local` / `cohere`), `llm` (`fake` / `openai`, **default `fake`**), `debug`.
+Anything omitted falls back to `configs/default.yaml`. Unknown fields are
+rejected with 422 rather than ignored.
+
+The response is four fields — `answer`, `citations`, `refused`, `refusal_reason`
+— and nothing else. Field-by-field spec in the
+[data model](data-model.md#queryresponse--the-shape-post-v1query-returns).
+Timings, hit counts, the collection name and the model are on the **library**
+result and in the logs, not on the endpoint.
+
+`llm` defaults to `fake`. A request that does not ask for `openai` gets the
+deterministic offline path — no key, no spend, and no answer worth reading. That
+default is on purpose: an unrequested bill is worse than an obviously fake
+answer. It also means a demo that forgets the field is demonstrating the schema.
+
+There is no `filters` field yet. `retrieval.filters.allowed_fields` in the config
+is still declared-only.
+
+### `X-Request-ID` is the debugging handle
+
+Send one and it comes back on the `X-Request-ID` response header, and it is on
+every log line the request emitted. Send nothing (or something malformed) and a
+fresh UUID4 is generated and used the same way. It is deliberately not in the
+response body.
+
+One question is now an embedding call, two Qdrant searches, possibly a rerank
+provider call and an LLM call. That id is what stitches them back together:
+
+```powershell
+docker compose logs api | Select-String "local-debug-1"
+```
+
+Quote it in any bug report. Without it, correlating a slow answer with the stage
+that caused it is guesswork.
+
+### The CLI
+
+```bash
+make query-fake QUERY="how does reciprocal rank fusion work"        # offline, free
+
+docker compose run --rm api python -m production_rag.query \
+    --question "how does reciprocal rank fusion work" --llm fake     # same thing, explicit
+
+docker compose run --rm api python -m production_rag.query \
+    --question "how does reciprocal rank fusion work" \
+    --llm openai --rerank local                                      # billed
+```
+
+Flags: `--question` (required), `--mode`, `--rerank`, `--llm` (default `fake`),
+`--debug`, `--log-level`. The last line of stdout is one JSON object —
+`{"ok": true, …}` with the response fields, or
+`{"ok": false, "error": …, "error_type": …}` on failure.
+
+`make query-fake` requires `QUERY="…"` and refuses without it (exit 2), the same
+guard `retrieve-fake` carries: a query command with a default question silently
+scores a question nobody asked. There is no `make` target for the billed path —
+run the CLI explicitly with `--llm openai`, so spending is never a habit.
+
+The CLI exists for the same reason the retrieve command does: it exercises the
+whole path with no HTTP client, no port and no container networking in the way,
+and it returns the same object the endpoint does.
+
+### `fake` vs `openai` — what each generator is for
+
+| | `--llm fake` *(default)* | `--llm openai` |
+|---|---|---|
+| API key | none | `OPENAI_API_KEY`, from `.env` or the environment |
+| Network | none | HTTPS per query |
+| Cost | zero | per prompt + completion token |
+| Answer | deterministic extractive stitching of the top passages | `generation.model` (`gpt-4o-mini`), temperature 0.1 |
+| `[n]` markers | emitted and resolvable — the contract is real | emitted and resolvable |
+| Refusal checks | both exercised | both exercised |
+| Reasoning, synthesis across passages | **none** | real |
+| Runs in CI | yes | no |
+| Quality claims | never | with corpus, chunking, k values and model stated |
+
+**`fake` is the contract, not the answer.** It genuinely exercises budgeting,
+prompt rendering, marker resolution, invalid-marker stripping, both refusal
+checks, the response schema, the per-node timings and the endpoint — offline,
+deterministic, free. What it cannot do is reason: it will not synthesise across
+two passages and its prose is not meant to be read. Same warning as the fake
+embedder and the fake reranker, one stage later. Never quote an answer it
+produced.
+
+The embedder still has to match the collection, independently of the generator. A
+`fake`-embedded collection answered by `--llm openai` produces a fluent answer
+grounded in hash noise — the most expensive way to be wrong this system offers.
+
+### Reading a refusal
+
+A refusal is a **200** with `refused: true`, `citations: []`, and a
+`refusal_reason` from a closed set:
+
+| `refusal_reason` | What happened | LLM called |
+|---|---|---|
+| `no_evidence` | retrieval returned nothing to ground an answer in | no |
+| `model_abstained` | the model emitted the `INSUFFICIENT_CONTEXT` sentinel | yes |
+| `no_citations` | the answer resolved to no citation at all, with `require_citation: true` | yes |
+| `empty_answer` | the model returned only whitespace | yes |
+
+```powershell
+docker compose run --rm api python -m production_rag.query `
+    --question "what is the airspeed velocity of a swallow" --llm fake |
+    Select-Object -Last 1 | ConvertFrom-Json |
+    Select-Object refused, refusal_reason, answer
+```
+
+Branch on `refused` and `refusal_reason`, never on the message text — the message
+is `generation.citations.refusal_message` and it is meant to be changed per
+deployment.
+
+`no_evidence` is the only reason that costs nothing: the model was never called.
+The other three mean the model ran and its output was not servable.
+
+**Refusals spiking is a retrieval investigation, not a prompt one.** The answer
+path can only be as good as what was retrieved. Order of checks: run the same
+question through `make retrieve-fake QUERY="…"` and see whether the passage comes
+back at all; confirm the embedder that built the collection matches the one
+querying it; then check `retrieval.score_threshold` — it is applied to the fused
+RRF score, whose maximum with two branches is `≈ 0.0328`, so anything set at a
+cosine-like `0.7` refuses everything, always.
+
+### Reading citations
+
+```powershell
+docker compose run --rm api python -m production_rag.query --question "…" --llm fake |
+    Select-Object -Last 1 | ConvertFrom-Json |
+    Select-Object -ExpandProperty citations |
+    Select-Object marker, rank, chunk_id, source_path
+```
+
+The `[n]` in the answer is an ordinal into **this response's** prompt blocks —
+`[2]` is the second passage this request rendered, and it identifies nothing
+tomorrow. What is durable is `chunk_id`. Clients store citations; they never
+store markers.
+
+Markers are not renumbered: an answer that cites only `[3]` keeps `[3]`, so the
+answer still lines up with the prompt that produced it.
+
+Two diagnostics live on the **library** result (`run_query(...).to_dict()`, and
+the CLI JSON when A3 widens it) rather than on the HTTP response:
+
+- `invalid_markers` — out-of-range `[n]` the model emitted. They are stripped
+  from the answer rather than left as footnotes that go nowhere. One occasionally
+  is model noise; a steady stream is a model or prompt problem.
+- `uncited_claims` — sentences of 24+ characters carrying no marker. Reported,
+  never fatal: refusing on one uncited transition sentence would make the
+  guardrail useless. It is citation coverage measured on every request.
+
+### Query failures
+
+**422, question rejected.**
+Empty or whitespace-only after stripping, or longer than 8000 characters. Nothing
+was retrieved and no token was spent — validation runs before the pipeline.
+
+**422 on an unknown field.**
+The request body carries a field the schema does not define (a typo, or a control
+that does not exist yet, such as `filters` or `top_k`). Rejected rather than
+ignored: a silently dropped control answers a different question than the one
+asked.
+
+**503 from `POST /v1/query`.**
+The query pipeline module is not present in this checkout. That is a
+split-milestone state, not a runtime fault: the route fails honestly instead of
+growing a second implementation inside itself.
+
+**200 with `refused: true` on a question the corpus clearly covers.**
+Retrieval, not generation. See the refusal section above.
+
+**The run fails with a provider error.**
+Rate limit, timeout, or an upstream error. The OpenAI SDK does the bounded
+retrying (`generation.max_retries`, `generation.timeout_seconds` are handed to
+it), and then the request fails. Unlike the reranker this stage is deliberately
+**not** fail-open: there is no degraded answer to serve, only an ungrounded one.
+The CLI prints the exception *type*, never the provider message, because an SDK
+error can carry the request that caused it — which here is the whole prompt.
+
+**`OPENAI_API_KEY` missing with `--llm openai`.**
+Fails before any query runs, as a configuration error. Put the key in the
+gitignored `.env` that Compose loads; never pass it as a flag, which would put it
+in shell history and in `docker inspect` output. Falling back to `fake` would
+fabricate an answer, so it does not.
+
+**Answers are slow.**
+Read `latency_ms` on the library result before anything else. `generate`
+dominating is normal and is a model / `max_output_tokens` question. `rerank`
+dominating means `input_top_k` is the dial (40 candidates is 40 forward passes).
+`retrieve` dominating points at Qdrant, not at the LLM.
+
+**Answer text is fine but the citations look thin.**
+Compare `hits_used` against `hits_retrieved`. A gap means the context budget
+(`generation.prompt.max_chunks_in_prompt`, `generation.max_context_tokens`)
+dropped the tail — and retrieval order is truncation order, so the reranker
+decided what the model was allowed to cite. Truncation is also logged as
+`context_truncated` with kept and dropped counts.
+
+> **Never turn on `observability.logging.log_prompts` or `log_retrieved_text` in
+> a deployment.** The prompt contains corpus text verbatim, so a log aggregator
+> with those enabled becomes a copy of the corpus with none of its access
+> controls. They exist for a local debugging session and default to `false`.
+
 ## Day-to-day commands
 
 | Task | Command |
@@ -470,7 +705,8 @@ make reingest-fake
 | Ingest the sample corpus, offline | `make ingest-fake` |
 | Chunk-count a corpus without writing | `make ingest-dry` |
 | Rebuild an M1 collection for M2 | `make reingest-fake` |
-| Ask one question, offline | `make retrieve-fake QUERY="…"` |
+| Retrieve passages, offline | `make retrieve-fake QUERY="…"` |
+| Answer a question, offline | `make query-fake QUERY="…"` |
 | Score the golden set | `make eval-hit-fake` |
 
 ## Common failures

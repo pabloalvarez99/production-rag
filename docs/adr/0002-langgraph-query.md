@@ -1,9 +1,12 @@
 # ADR 0002 — LangGraph for query-path orchestration
 
-- **Status:** Proposed
-- **Date:** 2026-08-10
+- **Status:** Accepted — implemented in M4
+- **Date:** 2026-08-10 (proposed), 2026-08-10 (accepted on M4 landing)
 - **Deciders:** production-rag maintainers
 - **Supersedes:** —
+- **Relates to:** [ADR 0004](0004-rerank-cross-encoder.md) (the stage the bypass
+  edge exists for), [ADR 0005](0005-grounded-generation.md) (the refusal edge and
+  what the generate node is allowed to emit)
 
 ## Context
 
@@ -80,3 +83,24 @@ conditional dispatch, and worse.
 - If the graph never grows a cycle by the time the service is feature-complete,
   this decision should be revisited and probably reversed — the justification is
   branching and cycles, and it expires if they never arrive.
+
+## Outcome (M4)
+
+The graph landed with M4, and the constraints above survived contact:
+
+- **Nodes are adapters.** Retrieval, fusion and rerank are the same
+  framework-free functions M2 and M3 shipped, called from nodes; generation and
+  citation resolution are plain functions too. The unit suite still exercises
+  every stage without importing LangGraph.
+- **Two conditional edges exist, and they are the ones predicted.** The rerank
+  bypass (stage disabled, or `fail_open` swallowing a provider failure) and the
+  refusal edge (nothing clears the evidence bar, so the generate node is never
+  entered — see [ADR 0005](0005-grounded-generation.md)).
+- **The state object is a project-owned model**, not a framework dict, so the
+  per-stage timings that populate `latency_ms` in the response are typed fields
+  rather than dictionary keys.
+- **Still no cycle.** Query rewriting and self-critique remain unbuilt, so the
+  clause above stands: if the service reaches feature-complete without one, this
+  ADR should be revisited. What the graph buys today is per-stage timing and two
+  declarative edges — real, and less than the full justification.
+- Ingest remains a plain script, as constrained.

@@ -4,22 +4,29 @@ A RAG system without offline evaluation is a system where every change is a
 guess. This document defines what is measured, how, and what number blocks a
 merge. The strategy rationale is in [ADR-0003](adr/0003-eval-strategy.md).
 
-## Status after M3
+## Status after M4
 
 M2 landed a retriever, so the first measurement in this repository became
 possible: **source-level `hit@k`**. M3 landed a rerank stage, which makes the
-first *comparison* possible — the same metric with the stage off and on.
-Everything else is still design.
+first *comparison* possible — the same metric with the stage off and on. M4
+landed answers, which changes what is *measurable* and changes **nothing about
+what is measured**.
+
+That distinction is the whole point of this section, so it is stated once,
+plainly: **M4 makes answer evaluation possible; M6 is when it happens.**
 
 | Piece | State |
 |---|---|
 | `data/eval/golden.jsonl` | **committed** — 14-item seed set, document-level labels |
 | Retrieval metrics (`hit@k` over source paths) | **runnable** — `scripts/eval_hit.py`, `make eval-hit-fake` |
 | Pre- vs post-rerank `hit@k` on the same set | **runnable** — `--rerank off` then `--rerank local`, one comparison; see [below](#pre--and-post-rerank-hitk) |
+| Answers with structured citations | **produced** as of M4 — the *input* an answer metric needs, not a metric |
+| Refusal rate on the golden set | countable by hand from `refused` today; not scored, no `unanswerable` slice in the seed set yet |
 | Retrieval metrics (`recall@k`, `mrr`, `ndcg@k` over chunk ids) | needs chunk-level labels; not written yet |
 | `nDCG`, the metric reranking actually moves | needs graded chunk-level labels; M6 |
-| Ragas / LLM-judge answer metrics | needs generated answers; M4 at the earliest |
-| `production_rag.evals` harness | M6 |
+| `faithfulness`, `citation_precision`, `answer_relevance` | needs an LLM judge; **M6** |
+| `refusal_accuracy` | needs an `unanswerable` slice **and** a judge; M6 |
+| Ragas / `production_rag.evals` harness | M6 |
 | Merge gate in CI | M6 |
 
 **No pre/post number is reported in this repository.** The procedure below is
@@ -30,6 +37,80 @@ the result is a 14-item smoke test either way.
 one metric, no thresholds, no gate. It exists so M2 can be checked end to end
 today without pre-building M6's abstractions around a metric that may not survive
 the move to chunk-level labels.
+
+### What M4 changed, and what it did not
+
+**Changed.** The answer path now emits exactly the structured artifacts an answer
+metric consumes, which is why the schema was designed before the harness:
+
+| Artifact | The metric it feeds later |
+|---|---|
+| `answer` prose with resolvable `[n]` markers | `faithfulness` — every claim traceable to a cited passage |
+| `citations[]` with `chunk_id` per marker | `citation_precision` — does the cited chunk actually support the sentence citing it |
+| `invalid_markers` | model-invented markers, countable **without a judge** |
+| `uncited_claims` | citation coverage per request, also judge-free |
+| `refused` | `refusal_accuracy`, once the golden set has an `unanswerable` slice |
+| `hits_retrieved` / `hits_used` | separates a truncation failure from a retrieval failure |
+| `refusal_reason` (closed set) | groups refusals by cause instead of counting them as one bucket |
+
+Because the citations are structured data rather than prose to be parsed, none of
+these needs the answer to be re-analysed. That was the design intent of
+[ADR 0005](adr/0005-grounded-generation.md).
+
+**Not changed.** No answer number is measured, reported, or quoted anywhere in
+this repository, and none should be until M6 runs. Specifically:
+
+- **No faithfulness rate.** M4 makes an unfaithful answer *easy to check by hand*
+  — open the cited chunk, read the sentence. It does not make the rate known.
+  "Every claim is citable" is a property of the design; "94% of claims are
+  faithful" is a measurement, and it needs a judge over a real set.
+- **`invalid_markers` is not a quality metric.** It counts model misbehaviour
+  of one specific kind. Zero dropped markers says nothing about whether the
+  markers that *did* resolve support their sentences.
+- **Nothing produced by `--llm fake` measures anything.** It stitches top
+  passages together and emits markers that resolve by construction. Every
+  citation it produces is trivially "precise" and every answer trivially
+  "faithful", because it does not reason. Running an answer metric over the fake
+  generator is measuring the plumbing a third time — after the fake embedder and
+  the fake reranker.
+- **Fourteen items with no `unanswerable` slice cannot score a refusal.** The
+  slice that measures whether the system hallucinates under pressure is the one
+  the seed set does not have yet. Until it does, a low refusal rate is not
+  evidence of good grounding — it is evidence that every question asked was
+  answerable.
+
+### Counting refusals today, honestly
+
+The one thing worth doing before M6 costs nothing: run the golden set through the
+query path and count `refused`. It is not a metric — no labels say which items
+*should* refuse — but the two degenerate outcomes are diagnostic on sight:
+
+| Observation | What it means |
+|---|---|
+| Nearly everything refuses | retrieval or `score_threshold`, not the prompt. Check `hits_retrieved`, and remember the threshold applies to a fused RRF score whose maximum is `≈ 0.0328` |
+| Nothing ever refuses, including on nonsense | the evidence bar is doing nothing. Ask a question the corpus cannot cover and confirm the answer comes back with `refused: true` and `refusal_reason: no_evidence` |
+
+Both are answerable with `--llm fake`, offline, because the pre-call refusal is
+system logic rather than model behaviour — the model is never called on that
+path. That is one of the few things the fake generator genuinely proves.
+
+### Why answer metrics wait for M6 rather than shipping with M4
+
+They need three things M4 does not provide, and shipping a number without them
+would be worse than shipping none:
+
+1. **A judge, calibrated.** `gpt-4o` scoring `faithfulness` is a proxy. An
+   uncalibrated proxy is a number, not a measurement — hence the 20-item
+   hand-labelled calibration subset in the target design below.
+2. **A set that can carry a threshold.** Fourteen items moves `hit@3` by seven
+   points per item. An answer metric on that set produces a decimal with no
+   right to two significant figures.
+3. **The composition slices.** `refusal_accuracy` is meaningless without
+   unanswerable items; `faithfulness` measured only on questions retrieval
+   already got right overstates the system exactly where it fails.
+
+The alternative — quoting a faithfulness number from a handful of hand-read
+answers — is precisely the "seems better" this document exists to refuse.
 
 ### Reading a `hit@k` number honestly
 
@@ -205,13 +286,23 @@ sends you tuning prompts when the real defect is chunk size. So retrieval is
 scored first, independently, and answer quality is scored only over queries
 whose retrieval succeeded.
 
+M4 made this principle load-bearing rather than tidy. Because the system refuses
+when nothing clears the evidence bar
+([ADR 0005](adr/0005-grounded-generation.md)), a retrieval miss now surfaces as a
+**refusal**, which looks to a user like "the system does not know" and to a naive
+end-to-end metric like an answer-quality failure. It is neither: it is a recall
+failure wearing a polite message. `refusal_reason` distinguishes the causes —
+`no_evidence` is a retrieval miss, the other three are the model — and the
+library result carries `hits_retrieved` and `hits_used`, so the two can be told
+apart without re-running anything.
+
 ## Golden dataset
 
 `data/eval/golden.jsonl` — one JSON object per line. Field spec in
 [`data/eval/README.md`](../data/eval/README.md). Minimum viable set is 50
 queries; below that, a single item moves recall@5 by two points and the metric
 stops being a signal. The committed seed set is 14 items and is explicitly not a
-gate — see [Status after M2](#status-after-m2).
+gate — see [Status after M4](#status-after-m4).
 
 Composition targets:
 
@@ -247,7 +338,10 @@ constants need work, not the retriever.
 ## Answer metrics
 
 Scored by an LLM judge (`gpt-4o`), sampled to bound cost. Judged only where
-retrieval succeeded.
+retrieval succeeded. **M6.** The inputs all exist as of M4 — structured
+`citations[]`, `refused`, `refusal_reason`, `invalid_markers` — so the harness reads fields
+rather than parsing prose; the harness itself is not written and no number below
+has been produced.
 
 | Metric | Definition |
 |---|---|
@@ -306,7 +400,10 @@ runs over the same dataset comparable.
 | Reranking changes nothing at any `k` | the reranker never ran, or ran on `fake` | check `rerank.applied` and `rerank.error` in the output; a fail-open degradation reports itself |
 | Post-rerank ordering is worse than the baseline | the right chunk was outside `input_top_k`, or the provider is `fake` | check `rerank.candidates` against the `--rerank off` run at the same `k` |
 | `faithfulness` drops, retrieval flat | prompt or model change | `generation.prompt`, model version |
-| Refusals spike | `score_threshold` raised too far | `retrieval.score_threshold` |
+| Refusals spike | `score_threshold` raised too far, or retrieval regressed | `retrieval.score_threshold` first, then `refusal_reason` and `hits_retrieved` — `no_evidence` is a recall failure until proven otherwise |
+| `invalid_markers` keeps coming back non-empty | the model is inventing markers | `generation.model` or `configs/prompts/system.md`; the markers are stripped from the answer, never rendered |
+| Answers get vaguer, citations point at plausible-but-tangential chunks | the context budget is truncating | `hits_used` vs `hits_retrieved`; `generation.prompt.max_chunks_in_prompt`, `generation.max_context_tokens` — retrieval order is truncation order |
+| Refusals that are all `model_abstained` and never `no_evidence` | the pre-call evidence check is not firing, so every refusal costs a call | `generation.citations.refuse_without_evidence`; see [ADR 0005](adr/0005-grounded-generation.md) |
 
 Change one variable per run. Two changes and a moved metric produce a story,
 not a finding.
@@ -315,8 +412,9 @@ not a finding.
 
 - **Latency under concurrency.** Single-request latency is reported per stage
   in every response; load testing waits until the deployment target is real.
-- **Cost per query.** Token usage is in the response payload; aggregating it
-  into a per-query cost dashboard is a later milestone.
+- **Cost per query.** The provider reports prompt and completion tokens on the
+  generation call, but nothing aggregates them yet and the query result does not
+  carry them; a per-query cost figure is a later milestone.
 - **Human preference.** The LLM judge is a proxy. It is calibrated against a
   20-item hand-labelled subset once, and re-calibrated when the judge model
   changes — an uncalibrated judge is a number, not a measurement.

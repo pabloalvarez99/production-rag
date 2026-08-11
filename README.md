@@ -445,7 +445,7 @@ strips the `sample/` prefix every label expects.
 
 Details: [runbook](docs/runbook.md#retrieve-m2) for operations and failure modes,
 [architecture](docs/architecture.md#retrieval-flow-m2--live) for the fusion
-mechanics, [evaluation](docs/evaluation.md#status-after-m2) for what is and is
+mechanics, [evaluation](docs/evaluation.md#status-after-m4) for what is and is
 not measured, [ADR 0001](docs/adr/0001-hybrid-qdrant.md) — now **Accepted** — for
 why hybrid on one collection.
 
@@ -580,6 +580,151 @@ for operations, model download and failure modes,
 [architecture](docs/architecture.md#why-rerank-runs-after-rrf-and-not-instead-of-it)
 for where the stage sits, [data model](docs/data-model.md#the-two-m3-fields-and-why-they-are-optional-keys)
 for the two fields a reranked hit gains.
+
+## Query API (M4)
+
+M4 closes the path: the stages above are now orchestrated as a **LangGraph
+graph** behind **`POST /v1/query`**, and the graph ends in **grounded
+generation** — an answer whose every claim carries an inline `[n]` citation
+resolved back to a retrieved chunk, or an explicit refusal when the corpus does
+not support one.
+
+Everything before this milestone returned passages. This is the first surface
+that returns prose, which is the point at which a retrieval system acquires the
+ability to be confidently wrong. The two design answers are
+[ADR 0005](docs/adr/0005-grounded-generation.md): **every claim is cited, and
+refusal beats invention.**
+
+```console
+$ curl -s localhost:8000/v1/query -H 'content-type: application/json' \
+    -d '{"question": "how does reciprocal rank fusion work", "llm": "openai"}' | jq -c
+{
+  "answer": "RRF sums 1/(k + rank) over the branches that returned a document [1], which is why cosine and BM25 scores never have to be calibrated against each other [2].",
+  "citations": [
+    {"marker": 1, "chunk_id": "9f2c…:0003", "source_path": "sample/05-rrf.md",           "rank": 1, "…": "…"},
+    {"marker": 2, "chunk_id": "1a7b…:0007", "source_path": "sample/08-bm25-vs-dense.md", "rank": 3, "…": "…"}
+  ],
+  "refused": false,
+  "refusal_reason": null
+}
+```
+
+### The `[n]` contract
+
+`[3]` is an **ordinal into the numbered blocks of the prompt this request
+rendered** — not into the retrieval result, which is longer whenever the context
+budget truncated. Resolution is therefore a lookup, not a heuristic: no
+similarity matching between a generated sentence and a passage happens anywhere,
+because that attributes fluency rather than provenance.
+
+- Citations appear in first-appearance order, deduplicated; a passage cited three
+  times appears once.
+- A marker outside the rendered range (`[9]` when six blocks were sent) is
+  **stripped from the answer and recorded** in `invalid_markers` — never left as
+  a footnote that goes nowhere. Recording it turns "the model invents citations"
+  into a measurable statement.
+- Surviving markers are **not renumbered**: an answer citing only `[3]` keeps
+  `[3]`, so it still lines up with the prompt that produced it.
+- Markers are request-scoped and mean nothing tomorrow. What is durable is the
+  `chunk_id` inside the resolved citation. Clients store citations, never markers.
+
+### Refusal is a first-class outcome
+
+When no retrieved chunk clears the evidence bar, **the generate node is never
+entered**: no provider call is made and nothing is billed. The response is a
+**200** with `refused: true`, `citations: []` and `refusal_reason: no_evidence`.
+
+There are two refusal points, and the reason code says which fired:
+`no_evidence` (before the call, free), `model_abstained` (the model emitted the
+`INSUFFICIENT_CONTEXT` sentinel), `no_citations` (nothing in the answer resolved,
+with `require_citation` on), `empty_answer`. A closed set, so an operator can
+alert on one and an eval can group by them — and clients branch on `refused` and
+`refusal_reason`, never on the message string, which is config.
+
+The design point is *who decides*. Asking the model to refuse when appropriate
+delegates the judgement to the component whose documented failure mode is exactly
+that judgement: a fluent, plausible answer assembled from parametric memory and
+the topical vocabulary of whatever passages it was handed. Deciding in the graph
+makes the refusal deterministic, free and testable with no provider at all.
+
+A refusal is not an error status. Nothing failed — the system was asked something
+the corpus does not cover and said so. The accepted cost, stated plainly: a
+question whose supporting chunk was never retrieved now yields a refusal, so
+**answer-path recall is capped by retrieval recall**, and a spike in refusals is
+a retrieval investigation rather than a prompt one.
+
+### fake vs openai — what each generator is for
+
+| | `--llm fake` *(default)* | `--llm openai` |
+|---|---|---|
+| API key | none | `OPENAI_API_KEY`, from `.env` or the environment |
+| Network / cost | none / zero | HTTPS per query / per token |
+| Answer | deterministic extractive stitching of the top passages | `gpt-4o-mini`, temperature 0.1 |
+| `[n]` markers, refusal edge, response schema | fully exercised | fully exercised |
+| Reasoning, synthesis across passages | **none** | real |
+| Runs in CI | yes | no |
+| Quality claims | never | with corpus, chunking, k values and model stated |
+
+Third instance of the same pattern in this repository, after the fake embedder
+and the fake reranker: **the generation contract is live everywhere; answer
+quality exists only on `openai`.** The fake generator genuinely exercises
+budgeting, prompt rendering, marker resolution, out-of-range dropping, the
+refusal edge, the per-stage timings and the endpoint — offline and
+deterministically. It does not reason, and no answer it produced is evidence of
+anything but wiring.
+
+### Running it
+
+```bash
+make query-fake QUERY="how does reciprocal rank fusion work"          # offline, free
+
+docker compose run --rm api python -m production_rag.query \
+    --question "how does reciprocal rank fusion work" --llm openai    # billed
+```
+
+`make query-fake` requires `QUERY="…"` and exits 2 without it. There is
+deliberately no `make` target for the billed path — spending stays an explicit
+command rather than a habit.
+
+The CLI (`python -m production_rag.query`) and the endpoint run the same graph.
+The CLI prints the richer library object; the endpoint returns the four response
+fields. The M2/M3 retrieve command has not gone anywhere: it is still how you
+inspect ranked passages without spending a generation call.
+
+### One request, one id
+
+`X-Request-ID` is echoed on the response **header** and on every log line the
+request emits — an absent or malformed one is replaced with a fresh UUID4. It is
+deliberately not in the response body. One question is now an embedding call, two Qdrant searches, a
+possible rerank provider call and an LLM call; that id is what stitches them back
+together when an answer is slow or wrong. Traces proper are M5; this is the seam
+they attach to.
+
+Secrets stay out of all of it: keys are referenced by env-var **name** in config,
+`Settings.safe_dump()` masks and a test asserts it, prompt and passage text are
+not logged at INFO (`log_prompts`, `log_retrieved_text` default to `false` —
+turning them on in a deployment makes the log aggregator a copy of the corpus),
+and provider error bodies stay server-side because they can quote the entire
+prompt back.
+
+### What M4 does not add
+
+Measured answer quality. There is no faithfulness number, no citation-precision
+number and no Ragas harness anywhere in this repository — that is M6. M4 emits
+exactly the structured artifacts an answer metric consumes (`citations[]` with
+`chunk_id`, `refused`, `refusal_reason`, and — on the library result —
+`invalid_markers` and `uncited_claims`), so the harness will read fields rather
+than parse prose. "Every claim is citable" is a property of the
+design; "94% of claims are faithful" is a measurement, and none has been taken.
+
+Details: [ADR 0005](docs/adr/0005-grounded-generation.md) for grounded generation
+and the refusal decision, [ADR 0002](docs/adr/0002-langgraph-query.md) — now
+**Accepted** — for the query graph,
+[architecture](docs/architecture.md#the-query-graph-m4) for the graph and stage
+mechanics, [runbook](docs/runbook.md#query-m4) for operating the endpoint and its
+failure modes, [data model](docs/data-model.md#citation) for the `Citation` and
+`QueryResponse` shapes, [evaluation](docs/evaluation.md#status-after-m4) for what
+M4 made measurable versus what M6 will measure.
 
 ## License
 

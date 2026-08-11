@@ -1,11 +1,21 @@
 # Data Model
 
 How data is shaped across the corpus, the chunk artifacts, the Qdrant collection,
-and the hits the retrieve command emits. Scope: **M2 + M3** — both named vectors,
-dense and sparse, are written by the ingest job and read by the retriever, and a
-hit can now also carry what the rerank stage did to it. Nothing here is
-aspirational except where a field is explicitly marked as belonging to a later
-milestone.
+the hits the retrieve command emits, and — new in M4 — the answer, citations and
+response body `POST /v1/query` returns. Scope: **M2 + M3 + M4**. Both named
+vectors, dense and sparse, are written by the ingest job and read by the
+retriever; a hit can carry what the rerank stage did to it; and a query response
+carries an answer with `Citation` objects resolved from its `[n]` markers, or a
+refusal. Nothing here is aspirational except where a field is explicitly marked
+as belonging to a later milestone.
+
+Three shapes, three lifetimes, and the difference matters:
+
+| Shape | Lives | Stable across requests |
+|---|---|---|
+| Qdrant point | in the collection, until the next ingest | yes — `chunk_id` is the durable citation target |
+| `RetrievalHit` | one retrieve command / one graph run | no — `rank` and `score` are per query |
+| `QueryResponse` / `Citation` | one HTTP response | the `[n]` marker: **no**. The `chunk_id` inside the citation: yes |
 
 ## Corpus documents (`data/raw/`)
 
@@ -293,6 +303,182 @@ false` with `reranker: null` is simply a run with reranking off. Reporting the
 distinction is the whole point: a rerank that quietly stopped happening looks
 exactly like a rerank that is not helping. See
 [ADR 0004](adr/0004-rerank-cross-encoder.md).
+
+## Citation
+
+New in M4. A `Citation` is what an inline `[n]` marker in an answer resolves to:
+the passage the model was shown, named in a way a reader can act on. It is
+`Citation.to_dict()` in `production_rag.generation.citations`, field for field.
+
+```jsonc
+{
+  "marker": 2,                     // the [n] this resolves; 1-based, ordinal into
+                                   // the PROMPT BLOCKS this request rendered
+  "chunk_id": "9f2c1a7b3d4e5f60:0003",
+  "source_path": "sample/08-bm25-vs-dense.md",
+  "title": "BM25 versus dense embeddings",
+  "heading_path": "BM25 versus dense embeddings > What BM25 actually computes",
+  "point_id": "6f3a1c2e-8b47-5d90-a1f2-0c9d7e4b3a15",
+  "rank": 2,                       // its position in the retrieved ranking
+  "score": 0.032258,               // the fused RRF score of that hit
+  "text": "Three ideas, each doing one job: …"   // omit with include_text=False
+}
+```
+
+| Field | Type | Why it exists |
+|---|---|---|
+| `marker` | int | binds the citation to the `[n]` in the answer text. **Request-scoped**: `[2]` identifies nothing outside this response |
+| `chunk_id` | string | the durable citation target. This is what a client stores, re-resolves, or reports as a broken link after a re-chunk |
+| `source_path` | string | the provenance a human reads — the file the claim came from |
+| `title`, `heading_path` | string \| null | where in that file. `heading_path` is a rendered string, not an array |
+| `point_id` | string | the Qdrant row, for anyone who needs to fetch the point itself |
+| `rank` | int | position in the retrieved ranking, so "the model cited the 6th passage and ignored the 1st" is visible |
+| `score` | float | the fused RRF score of that hit — a rank-derived number, not a similarity. See [`score_threshold`](architecture.md#score_threshold-on-a-fused-score-is-not-a-relevance-floor) |
+| `text` | string | the passage exactly as the model saw it, so verification needs no second fetch. Droppable (`include_text=False`) for a caller that already holds the hits |
+
+Ordering and duplication rules, because they are contract, not incidental:
+
+- Citations appear in **first-appearance order in the answer**, not in retrieval
+  order. Reading the answer top to bottom walks `citations[]` in order.
+- A passage cited three times appears **once**. `marker` holds its number; the
+  answer text keeps all three occurrences.
+- A passage that was sent but never cited is **not** in `citations[]`. The array
+  is what the answer used, not what retrieval found.
+- A marker outside the range of rendered blocks is **stripped from the answer
+  text** and listed in `invalid_markers`. It never becomes a `Citation`, and it
+  is never left in place as a footnote that goes nowhere. See
+  [ADR 0005](adr/0005-grounded-generation.md).
+- Surviving markers are **not renumbered**. An answer citing only `[3]` keeps
+  `[3]`, and its citation carries marker 3 — so the answer still lines up with
+  the prompt that produced it.
+
+### Markers index the prompt, not the retrieval result
+
+`[3]` means "the third **block in the rendered prompt**", which is not the same
+as the third retrieved hit whenever the context budget truncated. Resolution is
+done against the blocks for exactly that reason: mapping against the retrieval
+list would shift every marker by however many chunks did not fit, silently, and
+in the direction that makes the citations look correct.
+
+### `chunk_id` is durable; `[n]` is not
+
+Change `top_k`, toggle rerank, or re-run the same question an hour later, and
+`[3]` is a different passage. `chunk_id` survives all of that — it survives a
+full re-ingest of unchanged content, because point ids and chunk ids are derived,
+never random.
+
+What it does **not** survive is a re-chunk. `chunk_id` is `<doc_id>:<index>`, so
+changing `chunk_size` keeps the id and moves the text underneath it: a stored
+citation then resolves successfully to different text, silently. That is the same
+trap the eval labels face, described in
+[chunk identity](#chunk-identity-is-derived-never-random), and it is why a client
+archiving citations should archive `text` alongside `chunk_id`.
+
+## QueryResponse — the shape `POST /v1/query` returns
+
+New in M4. Four fields, whether the request produced an answer or a refusal:
+
+```jsonc
+{
+  "answer": "RRF sums 1/(k + rank) over the branches that returned a document [1], which is why cosine and BM25 scores never have to be calibrated against each other [2].",
+  "citations": [ /* Citation objects, first-appearance order */ ],
+  "refused": false,
+  "refusal_reason": null
+}
+```
+
+A refusal is the same object, and it arrives with **HTTP 200**:
+
+```jsonc
+{
+  "answer": "I could not find support for that in the indexed documents.",
+  "citations": [],
+  "refused": true,
+  "refusal_reason": "no_evidence"
+}
+```
+
+| Field | Note |
+|---|---|
+| `answer` | prose with `[n]` markers, or the configured refusal message. Markers resolve against `citations[]` and against nothing global |
+| `citations` | `Citation` objects, minus nothing — the HTTP model carries `marker`, `chunk_id`, `source_path`, `text`, `rank`, `title`, `heading_path` |
+| `refused` | the field a client branches on. Never string-match the message: it is config (`generation.citations.refusal_message`) and it is meant to change per deployment |
+| `refusal_reason` | one of `no_evidence`, `model_abstained`, `no_citations`, `empty_answer`; `null` on a served answer. A **closed set**, so an operator can alert on one and an eval can group by them |
+
+### Why 200, and why the body carries nothing else
+
+**200 with `refused: true`.** Nothing failed — the corpus does not cover the
+question and the system said so. Encoding that as 4xx or 5xx would make a correct
+outcome indistinguishable from an outage in every dashboard the service ever
+gets.
+
+**No timings, no counts, no collection name, no token usage.** All of that exists
+— on the library result, below — and is deliberately not projected onto the
+endpoint. The body is the answer and its evidence; a public surface that reports
+its own collection name, per-stage latencies and retrieval internals is
+describing its interior to anyone who asks. The correlation id comes back on the
+`X-Request-ID` header, which is what ties a response to the logs that hold the
+rest.
+
+### The request
+
+```jsonc
+{
+  "question": "how does reciprocal rank fusion work",   // required, 1–8000 chars, stripped
+  "mode": "hybrid",      // dense | sparse | hybrid — omitted uses the config default
+  "rerank": "local",     // off | auto | fake | local | cohere — omitted uses the default
+  "llm": "fake",         // fake | openai — DEFAULT fake: an unasked-for answer is never billed
+  "debug": false         // ask the pipeline for diagnostics; the response shape is unchanged
+}
+```
+
+Unknown fields are **rejected** (422), not ignored: a misspelled control that
+silently falls back to a default answers a different question than the one asked,
+and does it invisibly. A whitespace-only question is empty after stripping and is
+rejected the same way — before retrieval, before any provider call.
+
+## QueryResult — the library shape
+
+`production_rag.query_pipeline.QueryResult.to_dict()` is what `run_query()`
+returns and what the CLI prints. It is a superset of the HTTP response, and the
+extra fields are the diagnostics:
+
+```jsonc
+{
+  "query": "how does reciprocal rank fusion work",
+  "answer": "…[1]…[2]",
+  "refused": false,
+  "refusal_reason": null,
+  "citations": [ /* … */ ],
+  "hits_used": 6,             // blocks that survived the context budget
+  "hits_retrieved": 12,       // what retrieval handed over
+  "model": "gpt-4o-mini",     // or the fake model id
+  "mode": "hybrid",
+  "collection": "production_rag",
+  "embedded_model": "text-embedding-3-small",
+  "rerank": {"applied": true, "reranker": "local", "candidates": 40, "error": null},
+  "invalid_markers": [9],     // out-of-range [n] the model emitted; stripped from `answer`
+  "uncited_claims": ["Both branches contribute independently."],
+  "latency_ms": {"retrieve": 38, "rerank": 291, "generate": 1840, "cite": 3},
+  "total_ms": 2172
+}
+```
+
+| Field | What it answers |
+|---|---|
+| `hits_used` vs `hits_retrieved` | did the context budget truncate? Retrieval order is truncation order, so the dropped ones are the tail |
+| `rerank` | byte-for-byte the M3 summary object, so a consumer that already parses retrieve-command output parses this unchanged |
+| `invalid_markers` | is the model inventing citations? A steady non-empty list is a model or prompt problem, visible without reading answers |
+| `uncited_claims` | citation coverage on **every** request rather than sampled by a judge. Reported, never fatal — see [ADR 0005](adr/0005-grounded-generation.md) |
+| `latency_ms` | per graph node, not one number. "Which stage?" is the first question about a slow answer and a total cannot answer it. `total_ms` is their sum, a convenience and not a substitute |
+| `model`, `collection`, `embedded_model` | which model answered, out of which collection, embedded by what — the three facts that make a result reproducible a week later |
+
+Nothing in either shape is a credential, a prompt, or a raw provider payload. The
+system prompt is not echoed, the API key is never serialised
+(`Settings.safe_dump()` masks and a test asserts it), and an upstream error body —
+which can quote the entire prompt back — stays in the server logs behind the
+request id. The CLI's failure line prints the exception *type*, not its message,
+for the same reason.
 
 ## Derived artifacts (`data/processed/`)
 
