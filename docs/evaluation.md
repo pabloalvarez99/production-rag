@@ -4,6 +4,55 @@ A RAG system without offline evaluation is a system where every change is a
 guess. This document defines what is measured, how, and what number blocks a
 merge. The strategy rationale is in [ADR-0003](adr/0003-eval-strategy.md).
 
+## Status after M1
+
+Nothing here runs yet. M1 built the ingest path; there is no query path, so
+there is nothing to score.
+
+| Piece | State |
+|---|---|
+| `data/eval/golden.jsonl` | **committed** — 12-item seed set, document-level labels |
+| Retrieval metrics (`hit@k` over source paths) | possible once M2 lands a retriever |
+| Retrieval metrics (`recall@k` over chunk ids) | needs chunk-level labels; M2 |
+| Ragas / LLM-judge answer metrics | needs generated answers; M4 at the earliest |
+| Merge gate in CI | M6 |
+
+Everything below the next section is the target design. Nothing in this repo has
+produced a measured retrieval or answer number, and no such number should be
+quoted until the harness exists.
+
+## What the M1 seed set is for
+
+Twelve items is far too few to gate a merge, and it is not trying to. It exists
+to do three things now, so that none of them has to be invented later under
+deadline:
+
+1. **Pin the schema.** Downstream code can be written against a real file.
+2. **Prove the corpus is reachable.** Every `expected_source_paths` entry
+   resolves to a committed file under `data/raw/`; a path that does not exist
+   scores as a permanent miss and reads exactly like a retrieval regression.
+3. **Write the questions before the retriever exists.** Reading a chunk and then
+   writing a question about it produces questions phrased in the chunk's own
+   vocabulary, which flatters sparse retrieval and measures nothing. Authoring
+   ahead of the retriever removes that temptation structurally.
+
+### Document labels first, chunk labels later
+
+The seed set names source paths, not chunk ids. Chunk ids exist after ingest,
+but a chunk id is `<doc_id>:<index>` — so changing `chunk_size` or
+`chunk_overlap` does not invalidate a label, it quietly repoints it at a
+different passage. A label that breaks loudly is recoverable; one that keeps
+scoring against the wrong text is not. M1 is exactly the milestone in which
+those chunking values are most likely to move.
+
+Document-level labels support `hit@k` — did any chunk from the right document
+reach the top k — which is a coarser metric than `recall@k` and a real one. When
+chunking settles in M2, `relevant_chunk_ids` is added *alongside*
+`expected_source_paths`, not instead of it: the coarse labels stay useful as the
+check that survives the next re-chunk.
+
+## Target design (M2 onward)
+
 ## Principle: separate the two failure modes
 
 A wrong answer has exactly two causes, and they need different fixes:
@@ -23,7 +72,8 @@ whose retrieval succeeded.
 `data/eval/golden.jsonl` — one JSON object per line. Field spec in
 [`data/eval/README.md`](../data/eval/README.md). Minimum viable set is 50
 queries; below that, a single item moves recall@5 by two points and the metric
-stops being a signal.
+stops being a signal. The committed seed set is 12 items and is explicitly not a
+gate — see [Status after M1](#status-after-m1).
 
 Composition targets:
 
@@ -86,6 +136,11 @@ from ambition. Raise them as the system improves; lowering one to make a build
 pass is a decision that belongs in an ADR, not in a commit.
 
 ## Running an evaluation
+
+> `production_rag.evals` does not exist yet. The commands below are the agreed
+> interface for M6, recorded here so the harness is written to a stated contract
+> rather than discovered. Running them today fails with a module-not-found
+> error, which is the correct outcome.
 
 ```bash
 # retrieval only — free, deterministic, run on every change

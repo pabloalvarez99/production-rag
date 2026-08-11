@@ -1,10 +1,21 @@
 # production-rag — default runtime configuration.
 #
-# Scope note: this file is deliberately broader than what M0 consumes. The
-# milestone only wires ingest + hybrid retrieval + generation; the rerank,
-# evals and observability blocks are declared now so that later milestones
-# change values, not shape. A key existing here is not a promise that the
-# runtime reads it yet — see docs/architecture.md for what is live.
+# Scope note: this file is deliberately broader than what the code consumes. A
+# key existing here is not a promise that the runtime reads it yet. Each block
+# below carries a `status:` comment; docs/architecture.md holds the same table.
+#
+# Status after M1 (ingest):
+#   ingest            LIVE   (minus ingest.sparse)
+#   qdrant            LIVE   (dense vector, payload indexes, write consistency)
+#   ingest.sparse     M2     declared, nothing writes BM25 vectors yet
+#   retrieval         M2     no query path exists
+#   rerank            M3
+#   generation        M4
+#   evals             M6     golden seed set exists; the harness does not
+#   observability     M5     (logging block is live)
+#
+# Nothing here should be read as a claim that hybrid retrieval runs. It does
+# not. See the roadmap in README.md.
 #
 # Precedence (lowest to highest):
 #   1. this file
@@ -22,7 +33,7 @@ app:
   api_prefix: /v1
 
 # ---------------------------------------------------------------------------
-# Ingest — corpus to chunks to vectors.
+# Ingest — corpus to chunks to vectors.  status: LIVE (M1), except `sparse`.
 # ---------------------------------------------------------------------------
 ingest:
   source_dir: data/raw
@@ -33,6 +44,10 @@ ingest:
   exclude_globs:
     - "**/.*"
     - "**/node_modules/**"
+    # data/raw/README.md documents the corpus layout; it is not corpus. Matched
+    # at the corpus root only, so a README inside someone's document set still
+    # gets ingested.
+    - "README.md"
 
   chunking:
     # Recursive splitting on structural boundaries first (headings, then
@@ -47,6 +62,11 @@ ingest:
     prepend_heading_context: true
 
   embedding:
+    # status: LIVE. The ingest job also accepts `--embedder fake`, a
+    # deterministic hash embedder that overrides `provider` for a run: no key,
+    # no network, no spend, same dimensionality. It exists so the ingest path is
+    # runnable in CI. Its vectors are semantically meaningless — never quote a
+    # retrieval number measured against a fake-embedded collection.
     provider: openai
     model: text-embedding-3-small
     dimensions: 1536
@@ -57,8 +77,11 @@ ingest:
     timeout_seconds: 30
 
   sparse:
-    # Lexical side of the hybrid index. BM25 statistics are computed over the
-    # corpus at ingest time and stored as a named sparse vector in Qdrant.
+    # status: M2. Lexical side of the hybrid index. BM25 statistics are computed
+    # over the corpus at ingest time and stored as a named sparse vector in
+    # Qdrant. M1 declares the `sparse` vector on the collection but writes
+    # nothing to it, so M2 is a backfill rather than a collection migration.
+    # `enabled: true` states the target, not the current behaviour.
     enabled: true
     method: bm25
     k1: 1.2
@@ -75,6 +98,7 @@ ingest:
 
 # ---------------------------------------------------------------------------
 # Retrieval — hybrid dense + sparse with server-side fusion.
+# status: M2 — declared only. No query path reads any of these values today.
 # ---------------------------------------------------------------------------
 retrieval:
   mode: hybrid # dense | sparse | hybrid
@@ -101,7 +125,7 @@ retrieval:
     allowed_fields: [source, title, tags, created_at]
 
 # ---------------------------------------------------------------------------
-# Rerank — cross-encoder pass over fused candidates. Off in M0.
+# Rerank — cross-encoder pass over fused candidates.  status: M3 — not wired.
 # ---------------------------------------------------------------------------
 rerank:
   enabled: false
@@ -118,7 +142,7 @@ rerank:
   fail_open: true
 
 # ---------------------------------------------------------------------------
-# Generation — answer synthesis with mandatory citations.
+# Generation — answer synthesis with mandatory citations.  status: M4 — not wired.
 # ---------------------------------------------------------------------------
 generation:
   provider: openai
@@ -150,7 +174,8 @@ generation:
     max_chunks_in_prompt: 8
 
 # ---------------------------------------------------------------------------
-# Qdrant — vector store topology.
+# Qdrant — vector store topology.  status: LIVE (M1). The `sparse` named vector
+# is declared on the collection but unpopulated until M2.
 # ---------------------------------------------------------------------------
 qdrant:
   # Overridden by QDRANT_URL. Inside compose that is http://qdrant:6333.
@@ -166,6 +191,9 @@ qdrant:
       size: 1536 # must match ingest.embedding.dimensions
       distance: Cosine
     sparse:
+      # status: M2. Declared at collection-creation time on purpose: adding a
+      # named vector later would be a collection migration, whereas declaring
+      # it now makes M2 a backfill over existing points.
       name: sparse
       # Sparse vectors are not IDF-weighted by Qdrant itself; the ingest side
       # owns BM25 term weighting.
@@ -196,7 +224,8 @@ qdrant:
   write_consistency: wait
 
 # ---------------------------------------------------------------------------
-# Evals — offline quality gates. See docs/evaluation.md.
+# Evals — offline quality gates.  status: M6. The golden seed set is committed;
+# the harness is not written. See docs/evaluation.md.
 # ---------------------------------------------------------------------------
 evals:
   dataset_path: data/eval/golden.jsonl
@@ -225,6 +254,7 @@ evals:
 
 # ---------------------------------------------------------------------------
 # Observability — structured logs now, traces when Langfuse is configured.
+# status: the logging block is LIVE; tracing and metrics land in M5.
 # ---------------------------------------------------------------------------
 observability:
   logging:

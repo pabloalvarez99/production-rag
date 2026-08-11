@@ -6,9 +6,15 @@
     Checks, in order:
       1. Docker container state and health for both services.
       2. GET /health        on the API (liveness).
-      3. GET /v1/health     on the API (versioned readiness, includes deps).
+      3. GET /v1/ready      on the API -- only with -Ready.
       4. GET /readyz        on Qdrant.
       5. GET /collections   on Qdrant (is the target collection present?).
+
+    Liveness is the default API probe because it is the one surface that must
+    answer with no dependency up: a failure there means the process is wrong,
+    not the stack around it. Readiness reports dependency state and is opt-in,
+    which keeps this script usable as a boot gate before Qdrant is reachable.
+    Mirrors scripts/smoke_health.py -- keep the two in sync.
 
     Exits 0 only when every required probe passes, so it works as a gate in
     scripts and CI. A missing collection is reported as a warning, not a
@@ -23,15 +29,24 @@
 .PARAMETER Collection
     Collection name expected after ingest. Default production_rag
 
+.PARAMETER ApiPrefix
+    Versioned route prefix. Default /v1
+
+.PARAMETER Ready
+    Also probe the versioned readiness route as a required check.
+
 .EXAMPLE
     .\scripts\health.ps1
+    .\scripts\health.ps1 -Ready
     .\scripts\health.ps1 -BaseUrl http://localhost:8080
 #>
 [CmdletBinding()]
 param(
     [string]$BaseUrl = 'http://localhost:8000',
     [string]$QdrantUrl = 'http://localhost:6333',
-    [string]$Collection = 'production_rag'
+    [string]$Collection = 'production_rag',
+    [string]$ApiPrefix = '/v1',
+    [switch]$Ready
 )
 
 $ErrorActionPreference = 'Continue'
@@ -84,8 +99,13 @@ else {
 Write-Host ""
 Write-Host "==> endpoint probes" -ForegroundColor Cyan
 
+$prefix = '/' + $ApiPrefix.Trim('/')
+if ($prefix -eq '/') { $prefix = '' }
+
 $results.Add((Test-Endpoint -Name 'api /health'      -Uri "$BaseUrl/health"      -Required))
-$results.Add((Test-Endpoint -Name 'api /v1/health'   -Uri "$BaseUrl/v1/health"   -Required))
+if ($Ready) {
+    $results.Add((Test-Endpoint -Name "api $prefix/ready" -Uri "$BaseUrl$prefix/ready" -Required))
+}
 $results.Add((Test-Endpoint -Name 'qdrant /readyz'   -Uri "$QdrantUrl/readyz"    -Required))
 $results.Add((Test-Endpoint -Name 'qdrant /collections' -Uri "$QdrantUrl/collections"))
 

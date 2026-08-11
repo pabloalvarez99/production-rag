@@ -1,6 +1,12 @@
 # Architecture
 
-Status: M0 (milestone 0). Last updated: 2026-08-10.
+Status: **M1 (ingest) in progress.** Last updated: 2026-08-10.
+
+M0 shipped the walking skeleton: package, config, health and readiness probes,
+container stack. M1 adds the offline ingest path only — walk, chunk, embed
+(dense), upsert into Qdrant. The query path in this document is design, not
+running code: nothing serves `POST /v1/query` yet, hybrid retrieval is not
+wired, and no retrieval number quoted anywhere in this repo has been measured.
 
 ## Overview
 
@@ -28,12 +34,22 @@ footprint stays at two containers.
 
 | Component | Role | Owned by |
 |-----------|------|----------|
-| `api` container | FastAPI app, `production_rag.main:app`. Serves `/health`, `/v1/*`. | K1 (code), K2 (image/compose) |
-| `qdrant` container | Dense + sparse vectors and chunk payloads in one collection. Pinned to `qdrant/qdrant:v1.13.2`. | K2 |
-| `configs/default.yaml` | Declarative runtime config: ingest, retrieval, rerank, generation, qdrant, evals, observability. | K2 |
-| `data/` | `raw/` (corpus), `processed/` (derived chunk artifacts, gitignored), `eval/` (eval datasets). | K2 |
+| `api` container | FastAPI app, `production_rag.main:app`. Serves `/health`, `/v1/*`. | A1 (code), A2 (image/compose) |
+| `production_rag.ingest` | Offline ingest job: walk, chunk, embed, upsert. New in M1. | A1 |
+| `qdrant` container | Dense (M1) and sparse (M2) vectors plus chunk payloads in one collection. Pinned to `qdrant/qdrant:v1.13.2`. | A2 |
+| `configs/default.yaml` | Declarative runtime config: ingest, retrieval, rerank, generation, qdrant, evals, observability. | A2 |
+| `data/` | `raw/` (corpus), `processed/` (derived chunk artifacts, gitignored), `eval/` (golden set). | A2 |
+| `scripts/`, `Makefile` | Operator entrypoints: up, down, health, ingest. | A2 |
+| `docs/`, ADRs | Architecture, data model, runbook, evaluation. | A2 |
 
-## Request flow (query path)
+Owners were `K1`/`K2` through M0; the same two seats are `A1`/`A2` from M1.
+
+## Request flow (query path) — design only, not implemented
+
+> Nothing in this section runs as of M1. It is the agreed target shape, kept
+> here so that M2–M4 are implementation work rather than an architecture debate.
+> Treat every stage below as unbuilt until the roadmap in the README marks its
+> milestone done.
 
 1. Client calls `POST /v1/query` with a natural-language question.
 2. The query is embedded (dense) and tokenized (sparse, BM25-style).
@@ -115,31 +131,111 @@ BM25 scores live on incomparable scales. See
 | Embedding provider 429 | bounded retry with backoff, then 503 | a silent empty result set is indistinguishable from "no matches" |
 | No chunk clears the threshold | explicit refusal | an unsupported answer is worse than no answer |
 
-## Ingest flow (offline path)
+## Ingest flow (offline path) — M1
 
-1. Markdown/text files under `data/raw/` are walked per
-   `configs/default.yaml → ingest.include_extensions`.
-2. Documents are split into chunks (recursive structural splitting).
-3. Chunks are embedded (dense) and indexed (sparse) and upserted into the
-   Qdrant collection with their payload (source path, heading, chunk index).
-4. Derived artifacts may be cached under `data/processed/` (never committed,
-   never baked into the image).
+The ingest job is a batch process, not an endpoint. It is invoked from the
+operator surface (`make ingest-fake`, `scripts/ingest.ps1`), runs to completion,
+and reports counts. Nothing in the request path calls it.
 
-## What is live in M0 vs declared-only
+```
+  data/raw/  ← the corpus root; source_path is relative to it
+        │
+        ▼
+  ┌────────────────────────────┐
+  │ 1. WALK                    │  include_extensions allowlist, exclude_globs
+  │    files → documents       │  a skipped file is logged, never silent
+  └─────────────┬──────────────┘
+                │ doc: source_path, title, tags, body
+                ▼
+  ┌────────────────────────────┐
+  │ 2. PARSE                   │  YAML front matter → title/tags,
+  │    front matter + headings │  else first H1 is the title
+  └─────────────┬──────────────┘
+                ▼
+  ┌────────────────────────────┐
+  │ 3. CHUNK                   │  recursive: "\n## " → "\n\n" → "\n" → ". "
+  │    800 chars, 120 overlap  │  fragments < 120 chars dropped and counted
+  └─────────────┬──────────────┘
+                │ chunk: text, heading_path, chunk_index
+                ▼
+  ┌────────────────────────────┐
+  │ 4. HASH                    │  sha256 over chunk text; unchanged hash
+  │    incremental skip        │  skips step 5, the only paid step
+  └─────────────┬──────────────┘
+                ▼
+  ┌────────────────────────────┐
+  │ 5. EMBED (dense)           │  fake  → deterministic hash vectors, offline
+  │    batch 128               │  openai → text-embedding-3-small, 1536 dims
+  └─────────────┬──────────────┘
+                │
+                ▼
+  ┌────────────────────────────┐
+  │ 6. UPSERT                  │  named vector `dense`, payload alongside,
+  │    Qdrant, wait=true       │  wait so a smoke test cannot read a
+  └─────────────┬──────────────┘  half-built index
+                ▼
+   report: files, chunks, embedded, skipped, upserted, elapsed
+```
 
-`configs/default.yaml` is deliberately broader than what M0 consumes. Live in
-M0: ingest, retrieval (hybrid), generation, qdrant. Declared for later
-milestones (shape fixed, values may change): rerank, evals, observability.
+Sparse vectors are **not** produced in M1. The collection is created with the
+`sparse` named vector declared but unpopulated, so M2 adds a backfill rather
+than a collection migration.
+
+### Two embedders, one path
+
+`--embedder fake` is a deterministic hash embedder: it maps text to a vector by
+hashing, so the same text always yields the same vector, no API key is needed,
+and nothing leaves the machine. It exists so the entire ingest path is
+exercisable in CI and on a laptop with no credentials — a corpus can be walked,
+chunked, upserted and counted for free.
+
+It is worthless for retrieval quality, and that is deliberate. Its vectors carry
+no semantics, so any similarity number measured against a fake-embedded
+collection is noise. Use it to test plumbing; never to make a claim.
+
+`--embedder openai` reads `OPENAI_API_KEY` from the environment. Ingest is the
+only stage in the system that spends money per document, which is why the
+content hash and the incremental skip exist before the embed call rather than
+after it.
+
+## What is live in M1 vs declared-only
+
+`configs/default.yaml` is deliberately broader than what the code consumes.
+
+| Config block | State after M1 |
+|---|---|
+| `ingest` (walk, chunking, embedding, incremental) | live |
+| `qdrant` (collection, dense vector, payload indexes, write consistency) | live |
+| `ingest.sparse` | declared; BM25 vectors land in M2 |
+| `retrieval` (hybrid, fusion, thresholds) | declared only — no query path exists |
+| `rerank` | declared only — M3 |
+| `generation`, `citations` | declared only — M4 |
+| `evals` | declared; the golden seed set exists, the harness does not |
+| `observability.tracing` | declared only — M5 |
+
+A key existing in that file is not a claim that the runtime reads it.
+
+### Ingest failure behaviour
+
+| Failure | Behaviour | Rationale |
+|---|---|---|
+| Unsupported extension under the corpus root | skipped and logged with a count | a silently ignored PDF is indistinguishable from an empty corpus |
+| Document yields zero chunks after the minimum-size filter | warned, ingest continues | one malformed file must not abort a corpus run |
+| Embedding provider 429 or timeout | bounded retry with backoff, then abort the run | a partial embed batch upserted as if complete is worse than a failed run |
+| Qdrant unreachable at upsert | abort non-zero, nothing partially written | ingest is restartable; the content hash makes the retry cheap |
+| Collection exists with a different vector size | abort with an explicit message | silently writing 1536-dim vectors into a 768-dim collection fails much later and much less legibly |
 
 ## Deployment shape
 
-Local development is the only target in M0 and it is `docker compose up -d
+Local development is the only target through M1 and it is `docker compose up -d
 --build`. The compose file is written to be promotion-friendly: pinned image
 tags, healthchecks on both services, named volume for the vector index, and
 secrets injected exclusively via environment (never files baked into images).
 
-## Non-goals (M0)
+## Non-goals (M1)
 
+- No query endpoint. Retrieval, reranking and generation are all unbuilt.
+- No sparse/BM25 vectors yet; the named vector is declared, not populated.
 - No authentication/authorization on the API.
 - No horizontal scaling, no API gateway.
 - No GPU-bound local models in the runtime path.

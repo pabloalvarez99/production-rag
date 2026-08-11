@@ -6,10 +6,14 @@ measures. See [`docs/evaluation.md`](../../docs/evaluation.md) for how it is
 scored and [ADR-0003](../../docs/adr/0003-eval-strategy.md) for why the strategy
 is split in two tiers.
 
-## `golden.jsonl` (not committed yet)
+## `golden.jsonl`
 
 One JSON object per line. JSONL rather than a single JSON array so a malformed
 entry breaks one line instead of the whole file, and diffs stay readable.
+
+The file is committed and currently holds the **M1 seed set**: 12 items labelled
+at *document* granularity. The chunk-level schema below is the M2 target, not
+what is in the file today — see [M1 seed schema](#m1-seed-schema-current) first.
 
 ```jsonc
 {
@@ -37,6 +41,44 @@ entry breaks one line instead of the whole file, and diffs stay readable.
 | `tags` | string[] | no | free-form slicing for per-topic reports |
 | `notes` | string | no | why this item exists; read by whoever debugs its failure |
 
+## M1 seed schema (current)
+
+M1 ingests the corpus; it does not serve queries. Chunk ids therefore exist but
+nothing has ever retrieved one, and labelling against them now would produce
+labels invalidated by the first chunking change (see
+[`sample/05-chunking-pitfalls.md`](../raw/sample/05-chunking-pitfalls.md)).
+
+So the seed set labels the **source document** instead. It is a weaker signal —
+document-level `hit@k`, not chunk-level `recall@k` — and it is a signal that
+survives re-chunking, which is what makes it worth writing before the retriever
+exists.
+
+```jsonc
+{
+  "id": "q-0006",
+  "question": "What do the k1 and b parameters control in the BM25 scoring formula?",
+  "expected_source_paths": ["sample/08-bm25-vs-dense.md"],
+  "category": "exact_token",
+  "notes": "Single-character identifiers. Dense retrieval is expected to lose this one badly."
+}
+```
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `id` | string | yes | stable identifier; never reused after deletion |
+| `question` | string | yes | the query as a user would phrase it |
+| `expected_source_paths` | string[] | yes | paths relative to `data/raw/`; `[]` for unanswerable items |
+| `category` | enum | yes | `conceptual` \| `exact_token` \| `multi_hop` \| `unanswerable` |
+| `notes` | string | no | why this item exists; read by whoever debugs its failure |
+
+Every `expected_source_paths` entry must resolve to a committed file under
+`data/raw/`. A path that does not exist scores as a permanent miss and looks
+exactly like a retrieval regression.
+
+Migrating to the chunk-level schema means adding `relevant_chunk_ids` alongside
+`expected_source_paths`, not replacing it: the document-level labels stay useful
+as the coarse check that survives the next re-chunk.
+
 ## Composition targets
 
 | Category | Share | What it catches |
@@ -48,6 +90,11 @@ entry breaks one line instead of the whole file, and diffs stay readable.
 
 Minimum useful size is 50 items. Below that, one item moves `recall@5` by two
 points and the metric stops being a signal.
+
+The committed M1 seed set is 12 items and is therefore **not** a merge gate. It
+exists to pin the schema, to prove the corpus is reachable end to end, and to be
+the thing that gets extended rather than invented under deadline. Treat its
+numbers as a smoke test, never as a quality claim.
 
 ## Authoring rules
 

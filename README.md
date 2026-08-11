@@ -220,6 +220,90 @@ A few decisions worth stating, because they are the ones that get undone by acci
 
 Retrieval quality claims arrive with M2–M3 and will be reported as measured numbers on a stated corpus, never as adjectives.
 
+## Ingest (M1)
+
+M1 adds the offline ingest path and nothing else: walk a corpus directory, parse
+front matter, chunk on structural boundaries, embed the chunks (dense), and
+upsert them into Qdrant with a payload that makes every chunk citable. There is
+still no query endpoint, no hybrid retrieval, and no generation — those are M2
+and M4. No retrieval number in this repository has been measured.
+
+The job is `python -m production_rag.ingest`. Everything below is a wrapper over
+it, and it runs inside the `api` container by default so `QDRANT_URL` resolves
+to the compose hostname and nothing needs installing on the host.
+
+### The fake path — no key, no network, no spend
+
+```bash
+make ingest-dry                  # walk + chunk, report counts, write nothing
+make ingest-fake                 # ingest data/raw with the fake embedder
+make ingest-fake SOURCE=data/raw/my-corpus
+```
+
+`SOURCE` is the corpus **root**, not a document folder. Payload `source_path`
+values are relative to it, and its first path segment becomes the filterable
+`source` field — which is why the default is `data/raw` and a sample chunk reads
+as `sample/08-bm25-vs-dense.md`. That is exactly the string
+`data/eval/golden.jsonl` labels; pointing `SOURCE` deeper silently stops those
+labels matching.
+
+```powershell
+.\scripts\ingest.ps1 -DryRun     # Windows without make
+.\scripts\ingest.ps1
+```
+
+`--embedder fake` is a deterministic hash embedder: the same text always maps to
+the same vector, of the same declared dimensionality as the real one. That makes
+the whole path — walk, chunk, embed, upsert, count — runnable in CI and on a
+laptop with no credentials, which is the only way this stage stays testable.
+
+Its vectors carry no semantics. Any similarity or recall number measured against
+a fake-embedded collection is noise, and none is reported anywhere in this repo.
+Use it to prove the plumbing; never to make a quality claim.
+
+Verify afterwards:
+
+```bash
+python scripts/smoke_health.py       # liveness + Qdrant readiness + collection presence
+curl -s http://localhost:6333/collections/production_rag | jq .result.points_count
+```
+
+### The provider path — real embeddings, real money
+
+```bash
+cp .env.example .env             # put OPENAI_API_KEY in .env, never on the CLI
+make ingest-sample
+```
+
+```powershell
+.\scripts\ingest.ps1 -Embedder openai
+```
+
+The key is read from the environment or from the gitignored `.env` that Compose
+loads. Neither the Makefile nor the PowerShell script has a flag to pass it,
+because a credential on the command line lands in shell history and in `docker
+inspect` output.
+
+Embedding is the only stage in this system that costs money per document, which
+is why the content hash and the incremental skip sit *before* the embed call.
+Re-running ingest over an unchanged corpus is nearly free; `make ingest-dry`
+reports the chunk count, and that count times the average chunk size is the
+token bill you are about to pay.
+
+### Corpus and golden set
+
+`data/raw/sample/` holds nine committed Markdown documents on RAG mechanics —
+enough for chunking to produce a meaningful number of chunks and for the
+exact-token versus paraphrase distinction to be visible.
+`data/eval/golden.jsonl` holds a 12-item seed set labelled at *document*
+granularity (`expected_source_paths`), because chunk ids do not survive a
+chunking change and M1 is exactly when those settings move. It pins the schema
+and is explicitly not a merge gate — see [evaluation](docs/evaluation.md).
+
+Details: [runbook](docs/runbook.md#ingest-m1) for operations and failure modes,
+[data model](docs/data-model.md) for the exact payload written to Qdrant,
+[architecture](docs/architecture.md) for the stage diagram.
+
 ## License
 
 [MIT](LICENSE).

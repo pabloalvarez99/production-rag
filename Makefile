@@ -8,8 +8,19 @@ COMPOSE ?= docker compose
 API     ?= api
 BASE_URL ?= http://localhost:8000
 
+# Ingest knobs. SOURCE is the corpus *root*: payload `source_path` values are
+# relative to it, and its first path segment becomes the filterable `source`
+# field. Keeping it at data/raw is what makes a chunk of the sample corpus read
+# as `sample/08-bm25-vs-dense.md` — which is exactly what data/eval/golden.jsonl
+# labels. Point it deeper and those labels stop matching.
+#   make ingest-fake SOURCE=data/raw/my-corpus
+SOURCE      ?= data/raw
+CONFIG_FILE ?= configs/default.yaml
+INGEST      := python -m production_rag.ingest --config $(CONFIG_FILE)
+
 .DEFAULT_GOAL := help
-.PHONY: help build up down restart logs ps health test test-host shell-api shell-qdrant clean
+.PHONY: help build up down restart logs ps health health-ready ingest-fake ingest-sample \
+        ingest-dry test test-host shell-api shell-qdrant clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -35,10 +46,34 @@ logs: ## Tail logs from all services
 ps: ## Show service status and health
 	$(COMPOSE) ps
 
-health: ## Probe both health endpoints and Qdrant readiness
+health: ## Probe API liveness and Qdrant readiness
 	@curl -fsS $(BASE_URL)/health && echo ""
-	@curl -fsS $(BASE_URL)/v1/health && echo ""
 	@curl -fsS http://localhost:6333/readyz && echo ""
+
+health-ready: health ## Also probe versioned readiness (needs Qdrant reachable)
+	@curl -fsS $(BASE_URL)/v1/ready && echo ""
+
+# ---------------------------------------------------------------------------
+# Ingest (M1). Runs inside the api container so QDRANT_URL resolves to the
+# compose hostname and no host-side install is needed. Windows without make:
+# scripts/ingest.ps1 takes the same options.
+# ---------------------------------------------------------------------------
+
+# The fake embedder is a deterministic hash embedder: no API key, no network,
+# no spend, and identical text always yields an identical vector. That makes the
+# full walk -> chunk -> embed -> upsert path runnable in CI. The vectors say
+# nothing about relevance, so never read retrieval numbers off this target.
+ingest-fake: ## Ingest the corpus at $(SOURCE) with the deterministic fake embedder (no API key)
+	$(COMPOSE) run --rm $(API) $(INGEST) --source $(SOURCE) --embedder fake
+
+# Real embeddings. OPENAI_API_KEY comes from the environment or the gitignored
+# .env that Compose loads — never from the command line, where it would land in
+# shell history and in `docker inspect`.
+ingest-sample: ## Ingest $(SOURCE) with the real provider embedder (needs OPENAI_API_KEY)
+	$(COMPOSE) run --rm $(API) $(INGEST) --source $(SOURCE) --embedder openai
+
+ingest-dry: ## Walk and chunk $(SOURCE), report counts, write nothing
+	$(COMPOSE) run --rm $(API) $(INGEST) --source $(SOURCE) --embedder fake --dry-run
 
 # tests/ is excluded from the image (see .dockerignore) so it is mounted here.
 # Requires the dev extra to be part of the installed dependency set; if pytest
