@@ -295,7 +295,7 @@ token bill you are about to pay.
 `data/raw/sample/` holds nine committed Markdown documents on RAG mechanics —
 enough for chunking to produce a meaningful number of chunks and for the
 exact-token versus paraphrase distinction to be visible.
-`data/eval/golden.jsonl` holds a 12-item seed set labelled at *document*
+`data/eval/golden.jsonl` holds a 14-item seed set labelled at *document*
 granularity (`expected_source_paths`), because chunk ids do not survive a
 chunking change and M1 is exactly when those settings move. It pins the schema
 and is explicitly not a merge gate — see [evaluation](docs/evaluation.md).
@@ -303,6 +303,151 @@ and is explicitly not a merge gate — see [evaluation](docs/evaluation.md).
 Details: [runbook](docs/runbook.md#ingest-m1) for operations and failure modes,
 [data model](docs/data-model.md) for the exact payload written to Qdrant,
 [architecture](docs/architecture.md) for the stage diagram.
+
+## Retrieve (M2)
+
+M2 makes retrieval real. Sparse BM25 vectors are written alongside the dense
+ones at ingest, both named vectors are queried for every question, and the two
+ranked lists are fused with reciprocal rank fusion. This is the milestone where
+the hybrid claim at the top of this README stops being a plan.
+
+**What is live: retrieval. What is not: generation.** There is no
+`POST /v1/query`, no LLM call, no answer, no citations. Retrieval is a batch
+command that prints ranked passages. Reranking is M3; generation and the HTTP
+query surface are M4.
+
+```
+  question
+     │
+     ├─────────────────────┬──────────────────────┐
+     ▼                     ▼                      │
+  embed(query)        tokenise → BM25             │
+     │ dense vector        │ sparse vector        │
+     ▼                     ▼                      │
+  Qdrant `dense`      Qdrant `sparse`             │  one collection,
+  cosine kNN          dot product = BM25          │  one round trip
+  40 candidates       40 candidates               │
+     │                     │                      │
+     └──────────┬──────────┘                      │
+                ▼                                 │
+     RRF:  score = Σ w / (60 + rank)  ────────────┘
+                ▼
+     threshold, then top 12
+                ▼
+     hits[] carrying per-branch ranks
+```
+
+Every fused hit carries the rank it held in each branch that returned it, and
+that branch's share of the fused score. "Second, because BM25 ranked it 1st and
+dense ranked it 14th" is a debuggable statement; a bare fused score is not. A hit
+ranked by `sparse` and not `dense` is a document the embedding branch never
+returned — hybrid retrieval doing the thing it was adopted for, visible rather
+than assumed.
+
+### Migration: an M1 collection must be rebuilt
+
+M1 created the collection with `dense` as its only named vector. It did **not**
+pre-declare an empty `sparse` vector, so M2 is a migration rather than a
+backfill, and a collection left over from M1 cannot serve hybrid retrieval:
+
+```bash
+make reingest-fake       # drop + re-ingest with both vectors
+```
+
+```powershell
+.\scripts\ingest.ps1 -Recreate
+```
+
+Free on the fake embedder. On the `openai` path it re-embeds and re-bills every
+chunk, because the collection the content-hash skip compares against is the one
+being dropped — `make ingest-dry` prices it first. Sparse encoding itself costs
+nothing: it is arithmetic over the corpus, not a provider call.
+
+Querying a pre-M2 collection aborts with an explicit message instead of quietly
+degrading to dense-only. A hybrid system that silently stops being hybrid loses
+the recall it was built for and reports nothing.
+
+### Asking a question
+
+The retrieval primitives — BM25 encoding, both search paths on the store, RRF
+fusion — are in place and unit-tested offline. The commands below are the agreed
+operator surface over them (`python -m production_rag.retrieval`, logs on stderr,
+a JSON object as the last line of stdout, exit `0`/`1`/`2` exactly as the ingest
+job does). Until that entry point lands they fail with a module-not-found error,
+which is the correct outcome.
+
+```bash
+make retrieve-fake QUERY="how does reciprocal rank fusion work"
+make retrieve-fake QUERY="QDRANT__SERVICE__GRPC_PORT" MODE=sparse
+make retrieve-fake QUERY="what is a cross-encoder" TOPK=5
+```
+
+```powershell
+.\scripts\retrieve.ps1 -Query "how does reciprocal rank fusion work"
+.\scripts\retrieve.ps1 -Query "QDRANT__SERVICE__GRPC_PORT" -Mode sparse
+```
+
+`MODE` / `-Mode` accepts `hybrid` (default), `dense` or `sparse`. The
+single-branch modes exist to attribute a regression: a fused score that never
+beats its best branch is a fusion problem, not a retriever problem.
+
+### fake vs openai — what each path is good for
+
+The embedder used at query time **must** match the one that built the
+collection. Nothing detects a mismatch: both produce 1536 dimensions, the search
+succeeds, and the hits are confidently ranked noise.
+
+| | `--embedder fake` | `--embedder openai` |
+|---|---|---|
+| API key | none | `OPENAI_API_KEY`, from `.env` or the environment |
+| Network | none | HTTPS per batch of chunks, and per query |
+| Cost | zero | per chunk at ingest, per query at retrieval |
+| Dense vectors | deterministic hashes of the text — same input, same vector | `text-embedding-3-small`, 1536-d |
+| Dense branch | semantically meaningless; a paraphrase match is luck | real semantic retrieval |
+| **Sparse branch** | **genuinely lexical** — BM25 weights are computed from the text in pure Python, no model involved | identical; the embedder does not touch it |
+| Runs in CI | yes | no |
+| Quality claims | never | with the corpus, chunking and k values stated |
+
+The row that surprises people is the sparse one. The fake path is not a
+simulation of half the system: the lexical branch is the real thing, so
+exact-token retrieval can be exercised and measured with no credentials at all.
+Only the dense side is a stand-in.
+
+### Scoring the golden set
+
+```bash
+make eval-hit-fake       # source-level hit@k over data/eval/golden.jsonl
+```
+
+```powershell
+.\scripts\eval_hit.ps1 -PerBranch
+```
+
+`scripts/eval_hit.py` asks one question per golden item: did any retrieved chunk
+come from a labelled document? That is `hit@k` — coarser than `recall@k`, and
+the only metric the current document-level labels support.
+
+It reports and never gates. No thresholds, no non-zero exit on a low score:
+gating a 14-item seed set would be theatre, and the harness with Ragas metrics
+and a CI gate is M6.
+
+**How to read the number.** On a `fake`-embedded collection it is a plumbing
+assertion — the corpus is indexed, both branches return, fusion orders, and the
+payload paths match the labels. Only the sparse branch's contribution reflects
+anything about retrieval. On `openai` it is a real measurement over 14 items,
+which is to say a smoke test with error bars a whole document wide: one item
+moves `hit@5` by seven points. Neither number is a quality claim, and neither
+should ever be quoted without the embedder that produced it.
+
+If `hit@k` reads exactly `0.00` at every k, the labels and the stored paths
+disagree — almost always because ingest ran with `SOURCE=data/raw/sample`, which
+strips the `sample/` prefix every label expects.
+
+Details: [runbook](docs/runbook.md#retrieve-m2) for operations and failure modes,
+[architecture](docs/architecture.md#retrieval-flow-m2--live) for the fusion
+mechanics, [evaluation](docs/evaluation.md#status-after-m2) for what is and is
+not measured, [ADR 0001](docs/adr/0001-hybrid-qdrant.md) — now **Accepted** — for
+why hybrid on one collection.
 
 ## License
 

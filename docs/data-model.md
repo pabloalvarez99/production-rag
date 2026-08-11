@@ -1,8 +1,9 @@
 # Data Model
 
 How data is shaped across the corpus, the chunk artifacts, and the Qdrant
-collection. Scope: **M1** — the dense side is exact and implemented; the sparse
-side is declared and marked as such.
+collection. Scope: **M2** — both named vectors, dense and sparse, are written by
+the ingest job and read by the retriever. Nothing here is aspirational except
+where a field is explicitly marked as belonging to a later milestone.
 
 ## Corpus documents (`data/raw/`)
 
@@ -40,7 +41,7 @@ Two consequences follow, and the second is the nastier one:
   Re-chunking is a re-labelling event, and the labels have to be re-checked by
   hand rather than by a missing-key error.
 
-## Qdrant point — the exact shape written by M1
+## Qdrant point — the exact shape written by M2
 
 One collection (default name `production_rag`, overridable via
 `QDRANT_COLLECTION`) holds everything. One point per chunk:
@@ -50,9 +51,13 @@ One collection (default name `production_rag`, overridable via
   // Point id: UUID5 over "<source_path>::<chunk_index>::<content_sha256>".
   "id": "6f3a1c2e-8b47-5d90-a1f2-0c9d7e4b3a15",
   "vector": {
-    // Named vector. `sparse` is declared on the collection but not written
-    // until M2, so a point produced by M1 carries only this one.
-    "dense": [0.0123, -0.0456, /* … 1536 floats … */]
+    // Two named vectors, written in the same upsert. A point produced by M1
+    // carries only `dense` — see "Migration from an M1 collection" below.
+    "dense": [0.0123, -0.0456, /* … 1536 floats … */],
+    // Sparse vectors are index/value pairs, not a dense array: only the terms
+    // present in the chunk appear. Indices are hashed term ids (31 bits of
+    // SHA-1), values are full BM25 weights with IDF already applied.
+    "sparse": {"indices": [1174, 20388, 44901], "values": [1.82, 0.94, 2.31]}
   },
   "payload": {
     "chunk_id": "9f2c1a7b3d4e5f60:0003",
@@ -134,18 +139,79 @@ every generation prompt for no benefit and make citations read oddly.
 
 ### Vectors
 
-| Named vector | State after M1 | Spec |
+| Named vector | State after M2 | Spec |
 |---|---|---|
 | `dense` | **written** | size `1536`, distance `Cosine`, from `text-embedding-3-small`. Must match `ingest.embedding.dimensions`; a mismatch aborts the run rather than writing vectors that fail much later. |
-| `sparse` | declared, unpopulated | BM25 term weights with the `idf` modifier, backfilled in M2 (see [ADR 0001](adr/0001-hybrid-qdrant.md)). |
+| `sparse` | **written** | Full BM25 term weights, `modifier: none`, no fixed dimensionality. Parameters in `configs/default.yaml → ingest.sparse` (`k1`, `b`, `lowercase`, `stopwords`). See [ADR 0001](adr/0001-hybrid-qdrant.md). |
 
-Declaring `sparse` at collection creation time even though nothing writes it is
-the point: M2 becomes a backfill job over existing points rather than a
-collection migration and a full re-embed.
+Term identity is a **hash, not a vocabulary**: the sparse index of a term is the
+first 31 bits of its SHA-1. No vocabulary file to ship, version or keep in sync,
+and a query can weight a term the ingest run never saw. Two distinct terms can
+collide; at 2³¹ slots and this corpus size that degrades one ranking slightly
+rather than corrupting anything.
 
-The `fake` embedder writes vectors of the same declared dimensionality, so the
-collection shape is identical whichever embedder ran. Only the numbers are
-meaningless.
+The two are written in a single upsert, so a point cannot carry one without the
+other. That invariant is what makes "the sparse index is stale relative to the
+dense one" impossible by construction rather than by discipline.
+
+#### Migration from an M1 collection
+
+M1 created the collection with `dense` as its **only** named vector. It did not
+declare an empty `sparse` vector — earlier revisions of this document and of
+`configs/default.yaml` said it did, and that was wrong about the shipped code.
+
+Consequence: an M1 collection cannot serve hybrid retrieval and cannot be
+upgraded in place by the M2 ingest job. Rebuild it:
+
+```bash
+make reingest-fake     # or: scripts/ingest.ps1 -Recreate
+```
+
+Free on the `fake` embedder. On `openai` it is a **full re-embed of every
+chunk**, billed, because the collection the content-hash skip would compare
+against is the one being dropped. Budget it with `make ingest-dry` first.
+
+#### Why sparse weights are computed at ingest, not at query time
+
+BM25 needs corpus statistics — document frequency per term, average document
+length — and those are properties of the whole corpus, not of one chunk. The
+ingest job has the corpus in hand; the retriever has one question.
+
+The stored value is the **complete** BM25 weight, IDF included:
+
+```
+weight(term, chunk) = idf(term) · (tf · (k1 + 1)) / (tf + k1 · (1 − b + b · dl/avgdl))
+idf(term)           = ln(1 + (N − df + 0.5) / (df + 0.5))
+```
+
+A query vector then carries weight `1.0` per distinct query term, so the dot
+product of query and document vector *is* the BM25 score. Two things follow:
+querying needs the tokenizer only — no fitted statistics, no warm-up, no
+corpus-state dependency at query time — and Qdrant's `modifier: idf` must stay
+**off** on this vector, or IDF is applied twice and rare tokens dominate far
+beyond what BM25 says. `configs/default.yaml` sets `modifier: none` for exactly
+that reason.
+
+The cost is **IDF drift**: term weights stored in the index reflect the corpus as
+it stood at the last full ingest. Add a batch of documents about one topic and
+the true IDF of its vocabulary drops, while the stored weights keep the old,
+higher values — that topic's chunks stay slightly over-ranked on the sparse
+branch until the next full re-ingest. Incremental ingest makes this worse, not
+better: it skips unchanged chunks, so their weights are exactly the ones that do
+not get refreshed.
+
+At this corpus size the effect is not measurable. It becomes real at a scale
+where a full re-ingest stops being a coffee break, and the fix at that point is a
+periodic full re-encode of the sparse side, not a smarter query. Handing IDF to
+Qdrant's query-time `idf` modifier would remove the drift, but only by moving
+the whole weighting there — it cannot be layered on top of weights that already
+contain it.
+
+The `fake` embedder writes dense vectors of the same declared dimensionality, so
+the collection shape is identical whichever embedder ran. Only the dense numbers
+are meaningless — the sparse vectors are computed from the text either way, which
+is why a `fake`-embedded collection still produces a genuinely lexical sparse
+branch.
 
 ### Payload indexes
 
@@ -169,7 +235,7 @@ time — the ingest job rebuilds them from `data/raw/`.
 [evaluation.md](evaluation.md)). Committed, versioned with the repo, and never
 written by the runtime.
 
-The committed M1 seed set labels **document paths**, not chunk ids:
+The committed seed set labels **document paths**, not chunk ids:
 
 ```jsonc
 {"id": "q-0006", "question": "…", "expected_source_paths": ["sample/08-bm25-vs-dense.md"], "category": "exact_token"}

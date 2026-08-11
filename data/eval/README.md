@@ -11,9 +11,9 @@ is split in two tiers.
 One JSON object per line. JSONL rather than a single JSON array so a malformed
 entry breaks one line instead of the whole file, and diffs stay readable.
 
-The file is committed and currently holds the **M1 seed set**: 12 items labelled
-at *document* granularity. The chunk-level schema below is the M2 target, not
-what is in the file today — see [M1 seed schema](#m1-seed-schema-current) first.
+The file is committed and currently holds the **seed set**: 14 items labelled at
+*document* granularity. The chunk-level schema below is the target, not what is
+in the file today — see [seed schema](#seed-schema-current) first.
 
 ```jsonc
 {
@@ -41,11 +41,12 @@ what is in the file today — see [M1 seed schema](#m1-seed-schema-current) firs
 | `tags` | string[] | no | free-form slicing for per-topic reports |
 | `notes` | string | no | why this item exists; read by whoever debugs its failure |
 
-## M1 seed schema (current)
+## Seed schema (current)
 
-M1 ingests the corpus; it does not serve queries. Chunk ids therefore exist but
-nothing has ever retrieved one, and labelling against them now would produce
-labels invalidated by the first chunking change (see
+M2 serves retrieval, but chunk-level labels still wait: nothing has yet been
+tuned against a measurement, so chunk size and overlap remain the settings most
+likely to move, and labelling against chunk ids now would produce labels
+invalidated by the first chunking change (see
 [`sample/05-chunking-pitfalls.md`](../raw/sample/05-chunking-pitfalls.md)).
 
 So the seed set labels the **source document** instead. It is a weaker signal —
@@ -73,7 +74,30 @@ exists.
 
 Every `expected_source_paths` entry must resolve to a committed file under
 `data/raw/`. A path that does not exist scores as a permanent miss and looks
-exactly like a retrieval regression.
+exactly like a retrieval regression. `scripts/eval_hit.py` reports unresolvable
+labels separately from misses for that reason — one is a dataset bug, the other
+is a result.
+
+### Path matching is exact, and the ingest root decides it
+
+`scripts/eval_hit.py` compares `expected_source_paths` against the `source_path`
+field of each returned hit as **exact strings**. Both sides are relative to the
+corpus root that ingest walked, which makes the ingest `SOURCE` argument part of
+this dataset's contract rather than an operator preference:
+
+| Ingested with | Stored `source_path` | Labels here | Result |
+|---|---|---|---|
+| `SOURCE=data/raw` (default) | `sample/08-bm25-vs-dense.md` | `sample/08-bm25-vs-dense.md` | matches |
+| `SOURCE=data/raw/sample` | `08-bm25-vs-dense.md` | `sample/08-bm25-vs-dense.md` | every label misses |
+
+The second row scores `hit@k = 0.00` at every k — shaped exactly like total
+retrieval failure, caused by nothing but a path prefix. It is the first thing to
+check when the number is a flat zero.
+
+Paths use forward slashes on every platform, including Windows: ingest
+normalises separators before hashing, so a document ingested on the host and
+inside the Linux container produces the same `doc_id` and the same
+`source_path`. Write labels with `/`.
 
 Migrating to the chunk-level schema means adding `relevant_chunk_ids` alongside
 `expected_source_paths`, not replacing it: the document-level labels stay useful
@@ -91,10 +115,24 @@ as the coarse check that survives the next re-chunk.
 Minimum useful size is 50 items. Below that, one item moves `recall@5` by two
 points and the metric stops being a signal.
 
-The committed M1 seed set is 12 items and is therefore **not** a merge gate. It
-exists to pin the schema, to prove the corpus is reachable end to end, and to be
-the thing that gets extended rather than invented under deadline. Treat its
-numbers as a smoke test, never as a quality claim.
+The committed seed set is 14 items and is therefore **not** a merge gate. One
+item moves `hit@5` by seven points. It exists to pin the schema, to prove the
+corpus is reachable end to end, and to be the thing that gets extended rather
+than invented under deadline. Treat its numbers as a smoke test, never as a
+quality claim.
+
+M2 added two `exact_token` items (`q-0013`, `q-0014`) whose questions carry rare
+literal strings that appear verbatim in exactly one corpus document. They are
+the sparse branch's job description: the dense branch has nothing useful to say
+about a hyphenated model name or a config key, so a hit ranked by `sparse` and
+not by `dense` on those items is the hybrid claim being demonstrated rather than
+asserted. They are also the two items that stay meaningful on a `fake`-embedded
+collection, since BM25 weights are computed from the text and never touch the
+embedder.
+
+Both tokens (`bge-reranker-base`, `full_scan_threshold`) survive the tokenizer
+intact — it keeps internal `-`, `_` and `.` joined rather than splitting them
+into fragments, which is the whole point of having a lexical branch.
 
 ## Authoring rules
 

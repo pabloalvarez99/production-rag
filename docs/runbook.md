@@ -118,6 +118,45 @@ Cost control before a large run: `-DryRun` reports the chunk count, and chunks
 times average chunk size is the token bill. Check that number before spending
 it, not after.
 
+### M2 migration — an M1 collection must be rebuilt
+
+M1 created the collection with **one** named vector, `dense`. It did not declare
+an empty `sparse` vector; earlier revisions of these documents said it did, and
+that was wrong about the shipped code. Hybrid retrieval therefore cannot run
+against a collection left over from M1, and the collection cannot be upgraded in
+place.
+
+Symptom: the retrieve command exits `2` saying the collection has no `sparse`
+named vector. It aborts rather than falling back to dense-only, because a hybrid
+system that quietly stops being hybrid loses exactly the recall it was built for
+and reports nothing.
+
+```bash
+make reingest-fake          # drop + re-ingest with both vectors. Free.
+```
+
+```powershell
+.\scripts\ingest.ps1 -Recreate
+```
+
+> **Destructive, and on the `openai` path it costs money.** The rebuild drops
+> the collection, so the incremental content-hash skip has nothing to compare
+> against and **every chunk is re-embedded and re-billed**. Sparse encoding
+> itself is free — it is arithmetic over the corpus, not a provider call. Run
+> `make ingest-dry` first and price the chunk count.
+
+Confirm both vectors afterwards:
+
+```powershell
+Invoke-RestMethod http://localhost:6333/collections/production_rag |
+    Select-Object -ExpandProperty result |
+    Select-Object -ExpandProperty config |
+    Select-Object -ExpandProperty params
+```
+
+Expect `vectors` to hold `dense` and `sparse_vectors` to hold `sparse`. A
+collection with only `dense` is still an M1 collection.
+
 ### Re-ingest and recreate
 
 Re-running ingest over the same corpus is cheap: unchanged chunks are skipped by
@@ -167,6 +206,135 @@ The job wrote to a different collection than the one the probe checks. Compare
 `QDRANT_COLLECTION` in the container against the `-Collection` argument on the
 probe.
 
+## Retrieve (M2)
+
+Retrieval is a batch command, like ingest. It takes a question, queries the
+dense and sparse branches against the collection, fuses the two ranked lists
+with RRF, and prints the hits.
+
+**It returns passages, not an answer.** There is no LLM call anywhere in this
+path, no reranking (M3) and no citation rendering (M4). If you are looking for
+`POST /v1/query`, it does not exist yet.
+
+> The retrieval **primitives** are in place — BM25 encoding, both search paths on
+> the store, RRF fusion, all unit-tested offline. The command below is the agreed
+> operator surface over them: `python -m production_rag.retrieval`, flags mapping
+> one-to-one onto the config keys, logs on stderr and a JSON object as the last
+> line of stdout, exit `0` ok / `1` the run failed / `2` the invocation or the
+> collection is wrong — the same contract as the ingest job. Until that entry
+> point lands, these commands fail with a module-not-found error, which is the
+> correct outcome and not a stack problem.
+
+```bash
+make retrieve-fake QUERY="how does reciprocal rank fusion work"
+make retrieve-fake QUERY="QDRANT__SERVICE__GRPC_PORT" MODE=sparse
+make retrieve-fake QUERY="what is a cross-encoder" TOPK=5
+```
+
+```powershell
+.\scripts\retrieve.ps1 -Query "how does reciprocal rank fusion work"
+.\scripts\retrieve.ps1 -Query "QDRANT__SERVICE__GRPC_PORT" -Mode sparse
+.\scripts\retrieve.ps1 -Query "what is a cross-encoder" -TopK 5 -OnHost
+```
+
+Prerequisites: the stack is up, and the collection was built by M2 (see
+[the migration](#m2-migration--an-m1-collection-must-be-rebuilt)).
+
+### The embedder must match the collection
+
+`--embedder` / `-Embedder` selects how the **query** is embedded. It must be the
+same one that embedded the corpus.
+
+Querying a `fake`-embedded collection with `openai` — or the reverse — compares
+two unrelated vector spaces. Nothing errors: both produce 1536 dimensions, the
+kNN search succeeds, and you get twelve confidently ranked, meaningless hits.
+The sparse branch keeps working, which makes the result look *partly* sane and
+is the reason this is worth stating: the failure hides.
+
+There is no automatic check. If retrieval quality collapses for no reason,
+verify which embedder built the collection before touching fusion weights.
+
+### `MODE` attributes a regression to a branch
+
+| Mode | Queries | Use it when |
+|---|---|---|
+| `hybrid` (default) | both branches, fused | normal operation |
+| `dense` | embedding kNN only | asking whether the dense side alone finds it |
+| `sparse` | BM25 only | asking whether the lexical side alone finds it |
+
+Each hit carries the rank it held in every branch that returned it. A hit ranked
+by `sparse` and not by `dense` is a document the embedding branch never returned
+— hybrid retrieval doing the job it was adopted for, visible per hit rather than
+inferred.
+
+### Score the golden set
+
+```bash
+make eval-hit-fake            # source-level hit@k, fake embedder
+make eval-hit-sample          # real embeddings, costs money
+```
+
+```powershell
+.\scripts\eval_hit.ps1
+.\scripts\eval_hit.ps1 -PerBranch     # also scores dense-only and sparse-only
+```
+
+Reports and never gates. Read the number with the embedder attached: on `fake`
+the dense branch is hash noise so the score is a plumbing assertion — though the
+sparse branch is genuinely lexical even there, because BM25 weights come from
+the text. Full caveats in [evaluation.md](evaluation.md#reading-a-hitk-number-honestly).
+
+### Retrieval failures
+
+**`collection has no named vector 'sparse'`, exit 2.**
+The collection predates M2. Rebuild it:
+[M2 migration](#m2-migration--an-m1-collection-must-be-rebuilt). Retrying cannot
+fix this, which is why it exits 2 rather than 1.
+
+**Collection not found, exit 2.**
+Nothing has been ingested into the name being queried. Compare
+`QDRANT_COLLECTION` in the container against `--collection`, then run
+`make ingest-fake`.
+
+**Zero hits on every query.**
+Check `points_count` first — an empty collection retrieves nothing:
+
+```powershell
+Invoke-RestMethod http://localhost:6333/collections/production_rag |
+    Select-Object -ExpandProperty result |
+    Select-Object status, points_count
+```
+
+If it is populated, the next suspect is `retrieval.score_threshold`. It is
+applied to the **fused RRF score**, whose scale comes from rank positions, not
+similarity: with two branches and `k = 60` the theoretical maximum is
+`2/61 ≈ 0.0328`. A threshold set at anything resembling a cosine similarity —
+`0.7`, say — filters out everything, always. Default is `0.0`.
+
+**Hits look plausible but ranking is nonsense.**
+Embedder mismatch, above. Verify which embedder built the collection.
+
+**The sparse branch returns nothing for a specific query.**
+Legitimate when every query term is a stopword or absent from the corpus
+vocabulary — there is no lexical signal to match. Dense results are still
+returned and the empty branch is reported. Compare against
+`make retrieve-fake QUERY="..." MODE=sparse` to confirm it is the query and not
+the index.
+
+**Exact-token queries regress after adding documents (IDF drift).**
+BM25 term weights are computed at ingest time from corpus-wide statistics, so
+they reflect the corpus as of the last **full** ingest. Adding documents shifts
+the true IDF while the stored weights keep the old values, and incremental
+ingest makes it worse rather than better: it skips unchanged chunks, which are
+precisely the ones whose weights are stale.
+
+Immaterial at this corpus size. After a large corpus change, re-ingest fully
+before quoting any sparse-branch number:
+
+```bash
+make reingest-fake
+```
+
 ## Day-to-day commands
 
 | Task | Command |
@@ -179,6 +347,9 @@ probe.
 | Run tests in container | `make test` |
 | Ingest the sample corpus, offline | `make ingest-fake` |
 | Chunk-count a corpus without writing | `make ingest-dry` |
+| Rebuild an M1 collection for M2 | `make reingest-fake` |
+| Ask one question, offline | `make retrieve-fake QUERY="…"` |
+| Score the golden set | `make eval-hit-fake` |
 
 ## Common failures
 

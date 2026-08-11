@@ -4,28 +4,52 @@ A RAG system without offline evaluation is a system where every change is a
 guess. This document defines what is measured, how, and what number blocks a
 merge. The strategy rationale is in [ADR-0003](adr/0003-eval-strategy.md).
 
-## Status after M1
+## Status after M2
 
-Nothing here runs yet. M1 built the ingest path; there is no query path, so
-there is nothing to score.
+M2 landed a retriever, so the first measurement in this repository is now
+possible: **source-level `hit@k`**. Everything else is still design.
 
 | Piece | State |
 |---|---|
-| `data/eval/golden.jsonl` | **committed** — 12-item seed set, document-level labels |
-| Retrieval metrics (`hit@k` over source paths) | possible once M2 lands a retriever |
-| Retrieval metrics (`recall@k` over chunk ids) | needs chunk-level labels; M2 |
+| `data/eval/golden.jsonl` | **committed** — 14-item seed set, document-level labels |
+| Retrieval metrics (`hit@k` over source paths) | **runnable** — `scripts/eval_hit.py`, `make eval-hit-fake` |
+| Retrieval metrics (`recall@k`, `mrr`, `ndcg@k` over chunk ids) | needs chunk-level labels; not written yet |
 | Ragas / LLM-judge answer metrics | needs generated answers; M4 at the earliest |
+| `production_rag.evals` harness | M6 |
 | Merge gate in CI | M6 |
 
-Everything below the next section is the target design. Nothing in this repo has
-produced a measured retrieval or answer number, and no such number should be
-quoted until the harness exists.
+`scripts/eval_hit.py` is deliberately a **script, not a harness**: stdlib only,
+one metric, no thresholds, no gate. It exists so M2 can be checked end to end
+today without pre-building M6's abstractions around a metric that may not survive
+the move to chunk-level labels.
 
-## What the M1 seed set is for
+### Reading a `hit@k` number honestly
 
-Twelve items is far too few to gate a merge, and it is not trying to. It exists
-to do three things now, so that none of them has to be invented later under
-deadline:
+`hit@k` asks one question: *did any chunk from a labelled document appear in the
+top k?* It is coarse by construction — a document can be retrieved for the wrong
+reason and still count.
+
+What the number means depends entirely on which embedder built the collection,
+and the two cases are not comparable:
+
+| Collection built with | What `hit@k` measures | What it does **not** measure |
+|---|---|---|
+| `--embedder fake` | that the plumbing works end to end: the corpus is indexed, both branches return, fusion orders, payload paths match the labels. The sparse branch is genuinely lexical, so exact-token items can legitimately hit. | anything about dense retrieval quality. The dense branch contributes hash noise, and a conceptual/paraphrase item hitting is luck. |
+| `--embedder openai` | retrieval quality on this corpus, at this chunking, with this fusion config — a real number for a 14-item set, which is to say a smoke test with error bars measured in whole documents. | statistical significance. One item moves `hit@5` by seven points. |
+
+So: a `fake`-path `hit@k` is a **plumbing assertion**, and the only honest way to
+report it is alongside the embedder that produced it. Neither number belongs in a
+README as a quality claim. See [ADR-0003](adr/0003-eval-strategy.md).
+
+The per-branch breakdown is worth more than the headline at this size. `hit@k`
+on the sparse branch alone, over the `exact_token` slice, is a direct test of the
+thing M2 was built for — and it is meaningful even on a `fake` collection.
+
+## What the seed set is for
+
+Fourteen items is far too few to gate a merge, and it is not trying to. It
+exists to do three things now, so that none of them has to be invented later
+under deadline:
 
 1. **Pin the schema.** Downstream code can be written against a real file.
 2. **Prove the corpus is reachable.** Every `expected_source_paths` entry
@@ -47,11 +71,46 @@ those chunking values are most likely to move.
 
 Document-level labels support `hit@k` — did any chunk from the right document
 reach the top k — which is a coarser metric than `recall@k` and a real one. When
-chunking settles in M2, `relevant_chunk_ids` is added *alongside*
+chunking settles, `relevant_chunk_ids` is added *alongside*
 `expected_source_paths`, not instead of it: the coarse labels stay useful as the
-check that survives the next re-chunk.
+check that survives the next re-chunk. M2 did not settle it — chunk size and
+overlap are unchanged, but nothing has yet been tuned against a measurement, so
+the chunk-level labels still wait.
 
-## Target design (M2 onward)
+### Labels match on `source_path`, exactly
+
+The comparison `scripts/eval_hit.py` performs is a string match between
+`expected_source_paths` and the `source_path` field of each returned hit. Both
+sides must be relative to the same corpus root.
+
+That makes the ingest `SOURCE` argument part of the eval contract, not an
+operator preference. Ingesting `data/raw` stores `sample/08-bm25-vs-dense.md`,
+which is what the labels say. Ingesting `data/raw/sample` stores
+`08-bm25-vs-dense.md`, every label misses, and `hit@k` reads `0.00` — identical
+in shape to a total retrieval failure and caused by nothing but a path prefix.
+
+`scripts/eval_hit.py` reports unmatched-label paths separately from misses for
+exactly this reason: a label whose file does not exist under `data/raw/` is a
+dataset bug, not a retrieval result.
+
+## Running `hit@k` today
+
+```bash
+make reingest-fake      # rebuild the collection with sparse vectors (M2 needs this)
+make eval-hit-fake      # source-level hit@k over data/eval/golden.jsonl
+```
+
+```powershell
+.\scripts\eval_hit.ps1                    # same, Windows without make
+.\scripts\eval_hit.ps1 -Embedder openai   # real embeddings; costs money
+```
+
+Output is a per-k table plus a per-category and per-branch breakdown, and a JSON
+object on the last line of stdout for anything that wants to parse it. There is
+no threshold and no non-zero exit on a low score — this script reports, it does
+not gate. Gating is M6, and gating a 14-item set would be theatre.
+
+## Target design (M6 onward)
 
 ## Principle: separate the two failure modes
 
@@ -72,8 +131,8 @@ whose retrieval succeeded.
 `data/eval/golden.jsonl` — one JSON object per line. Field spec in
 [`data/eval/README.md`](../data/eval/README.md). Minimum viable set is 50
 queries; below that, a single item moves recall@5 by two points and the metric
-stops being a signal. The committed seed set is 12 items and is explicitly not a
-gate — see [Status after M1](#status-after-m1).
+stops being a signal. The committed seed set is 14 items and is explicitly not a
+gate — see [Status after M2](#status-after-m2).
 
 Composition targets:
 
@@ -158,9 +217,12 @@ runs over the same dataset comparable.
 
 | Symptom | Likely cause | Where to look |
 |---|---|---|
+| `hit@k` is exactly `0.00` at every k | labels and payload paths disagree | the ingest `SOURCE` root — see [labels match on `source_path`](#labels-match-on-source_path-exactly) |
 | `recall@5` drops, `mrr` stable | fewer relevant chunks retrieved overall | chunking size/overlap, `dense_top_k` |
 | `recall@5` stable, `mrr` drops | ordering degraded | fusion weights, `rrf.k` |
 | Sparse branch collapses | tokenisation or stopwords changed | `ingest.sparse` block |
+| Sparse branch quietly returns nothing | collection predates M2, no `sparse` vector | rebuild: `make reingest-fake` |
+| Exact-token items regress after adding documents | IDF drift since the last full ingest | full re-ingest, then re-measure |
 | `faithfulness` drops, retrieval flat | prompt or model change | `generation.prompt`, model version |
 | Refusals spike | `score_threshold` raised too far | `retrieval.score_threshold` |
 

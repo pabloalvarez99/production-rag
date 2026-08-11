@@ -4,18 +4,19 @@
 # key existing here is not a promise that the runtime reads it yet. Each block
 # below carries a `status:` comment; docs/architecture.md holds the same table.
 #
-# Status after M1 (ingest):
-#   ingest            LIVE   (minus ingest.sparse)
-#   qdrant            LIVE   (dense vector, payload indexes, write consistency)
-#   ingest.sparse     M2     declared, nothing writes BM25 vectors yet
-#   retrieval         M2     no query path exists
+# Status after M2 (hybrid retrieval):
+#   ingest            LIVE
+#   ingest.sparse     LIVE   BM25 vectors are written at ingest time
+#   qdrant            LIVE   (dense + sparse vectors, payload indexes, consistency)
+#   retrieval         LIVE   read by `python -m production_rag.retrieval`
 #   rerank            M3
 #   generation        M4
-#   evals             M6     golden seed set exists; the harness does not
+#   evals             M6     thresholds declared; only a hit@k script exists
 #   observability     M5     (logging block is live)
 #
-# Nothing here should be read as a claim that hybrid retrieval runs. It does
-# not. See the roadmap in README.md.
+# Hybrid *retrieval* runs. Hybrid *answering* does not: there is no query
+# endpoint, no LLM call, no citation rendering. Retrieval is a batch command
+# that prints ranked hits. See the roadmap in README.md.
 #
 # Precedence (lowest to highest):
 #   1. this file
@@ -33,7 +34,7 @@ app:
   api_prefix: /v1
 
 # ---------------------------------------------------------------------------
-# Ingest — corpus to chunks to vectors.  status: LIVE (M1), except `sparse`.
+# Ingest — corpus to chunks to vectors.  status: LIVE (M1 dense, M2 sparse).
 # ---------------------------------------------------------------------------
 ingest:
   source_dir: data/raw
@@ -77,11 +78,25 @@ ingest:
     timeout_seconds: 30
 
   sparse:
-    # status: M2. Lexical side of the hybrid index. BM25 statistics are computed
-    # over the corpus at ingest time and stored as a named sparse vector in
-    # Qdrant. M1 declares the `sparse` vector on the collection but writes
-    # nothing to it, so M2 is a backfill rather than a collection migration.
-    # `enabled: true` states the target, not the current behaviour.
+    # status: LIVE (M2). Lexical side of the hybrid index. BM25 statistics are
+    # computed over the corpus at ingest time and written as a named sparse
+    # vector in the same upsert as the dense one — a point carries both or is
+    # not written.
+    #
+    # Correction to an earlier note here: M1 did NOT declare an empty `sparse`
+    # vector on the collection. It created the collection with `dense` as the
+    # only named vector, so M2 is a collection MIGRATION, not a backfill. A
+    # collection built by M1 must be rebuilt:
+    #     make reingest-fake        # ingest --recreate-collection
+    # Free on the fake embedder; a full billed re-embed on openai.
+    #
+    # Sparse encoding itself costs nothing per document: it is arithmetic over
+    # the corpus, not a provider call. Only the dense embed is paid.
+    #
+    # Weights reflect the corpus as of the last FULL ingest (IDF drift). An
+    # incremental run skips unchanged chunks, so their weights are exactly the
+    # ones that do not get refreshed. Immaterial at this size; re-ingest fully
+    # before quoting a sparse-branch number after a large corpus change.
     enabled: true
     method: bm25
     k1: 1.2
@@ -97,10 +112,17 @@ ingest:
   hash_algorithm: sha256
 
 # ---------------------------------------------------------------------------
-# Retrieval — hybrid dense + sparse with server-side fusion.
-# status: M2 — declared only. No query path reads any of these values today.
+# Retrieval — hybrid dense + sparse, fused with RRF.
+# status: LIVE (M2). Read by `python -m production_rag.retrieval` (make
+# retrieve-fake / scripts/retrieve.ps1). No HTTP query endpoint reads it yet —
+# that is M4 — and nothing downstream of fusion exists: no rerank, no answer.
 # ---------------------------------------------------------------------------
 retrieval:
+  # dense  — embedding kNN only; the honest setting when the collection has no
+  #          sparse vector, and the way to ask for dense-only on purpose.
+  # sparse — BM25 only; useful for attributing a regression to one branch.
+  # hybrid — both, fused. Aborts if the collection carries no `sparse` vector,
+  #          rather than degrading silently to dense-only.
   mode: hybrid # dense | sparse | hybrid
   # Candidates pulled from each branch before fusion. Deliberately larger than
   # top_k: fusion can only reorder what it was given.
@@ -110,17 +132,26 @@ retrieval:
   top_k: 12
   fusion:
     method: rrf # reciprocal rank fusion — score-scale agnostic
-    k: 60 # RRF smoothing constant; standard value from the original paper
-    # Relative pull of each branch. Equal weights until evals say otherwise.
+    # score(doc) = sum over branches of  weight / (k + rank), rank 1-based.
+    # A document missing from a branch contributes nothing from that branch.
+    k: 60 # RRF smoothing constant; standard value from the original paper.
+    #     Large k damps the gap between top ranks: rank 1 -> 1/61, rank 2 ->
+    #     1/62. A branch that is confidently wrong cannot dominate.
+    # Relative pull of each branch. Equal weights until evals say otherwise;
+    # tuning these by intuition is how a fusion config stops being explainable.
     dense_weight: 1.0
     sparse_weight: 1.0
-  # Hard floor on fused score. 0.0 disables it; raise only with eval evidence,
-  # since a threshold that is too high turns recall misses into silent empties.
+  # Hard floor applied AFTER fusion, to the RRF score — which is a function of
+  # rank positions, not of similarity. With two branches and k=60 the maximum is
+  # 2/61 ~= 0.0328, and a single-branch rank-1 hit scores ~0.0164. So this
+  # filters by "found by both branches, high up", not by relevance. 0.0 disables
+  # it; raise only with eval evidence, and expect refusals to spike first.
   score_threshold: 0.0
   # Payload keys returned with each hit. Keep this tight: every extra field is
   # tokens in the generation prompt.
   return_payload_fields: [doc_id, chunk_id, title, source_path, heading_path, text]
   filters:
+    # status: M4 — the allowlist guards an HTTP surface that does not exist yet.
     # Metadata filters the query API is allowed to accept, as an allowlist.
     allowed_fields: [source, title, tags, created_at]
 
@@ -174,8 +205,9 @@ generation:
     max_chunks_in_prompt: 8
 
 # ---------------------------------------------------------------------------
-# Qdrant — vector store topology.  status: LIVE (M1). The `sparse` named vector
-# is declared on the collection but unpopulated until M2.
+# Qdrant — vector store topology.  status: LIVE. Both named vectors are created
+# and written as of M2. A collection created by M1 has `dense` only and must be
+# rebuilt (`make reingest-fake`); it cannot be upgraded in place.
 # ---------------------------------------------------------------------------
 qdrant:
   # Overridden by QDRANT_URL. Inside compose that is http://qdrant:6333.
@@ -191,13 +223,20 @@ qdrant:
       size: 1536 # must match ingest.embedding.dimensions
       distance: Cosine
     sparse:
-      # status: M2. Declared at collection-creation time on purpose: adding a
-      # named vector later would be a collection migration, whereas declaring
-      # it now makes M2 a backfill over existing points.
+      # status: LIVE (M2). Created with the collection from M2 onward. It was
+      # NOT declared by M1 — that claim was wrong and is why upgrading an M1
+      # collection needs --recreate-collection rather than a backfill.
       name: sparse
-      # Sparse vectors are not IDF-weighted by Qdrant itself; the ingest side
-      # owns BM25 term weighting.
-      modifier: idf
+      # No `size`: a sparse vector is index/value pairs, only the terms present
+      # in the chunk. Nothing here has to match ingest.embedding.dimensions.
+      #
+      # `none`, NOT `idf`, and this one matters. Ingest stores FULL BM25 weights
+      # with IDF already folded in, so the dot product of query and document
+      # vector is exactly the BM25 score. Qdrant's `idf` modifier would apply IDF
+      # a second time and square the term -- rare tokens would dominate far
+      # beyond what BM25 says. An earlier revision of this file said `idf`; it
+      # was wrong. See production_rag.retrieval.sparse.
+      modifier: none
 
   hnsw:
     m: 16
@@ -224,8 +263,11 @@ qdrant:
   write_consistency: wait
 
 # ---------------------------------------------------------------------------
-# Evals — offline quality gates.  status: M6. The golden seed set is committed;
-# the harness is not written. See docs/evaluation.md.
+# Evals — offline quality gates.  status: M6 for everything below. The golden
+# seed set is committed and `scripts/eval_hit.py` computes source-level hit@k
+# from it, but that script reads NONE of these keys: it has no thresholds and
+# never gates. The metrics, thresholds and judge config here belong to the M6
+# harness, which is not written. See docs/evaluation.md.
 # ---------------------------------------------------------------------------
 evals:
   dataset_path: data/eval/golden.jsonl
