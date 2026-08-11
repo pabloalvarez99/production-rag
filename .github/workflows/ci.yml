@@ -2,7 +2,13 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -31,6 +37,11 @@ jobs:
 
       - name: Test
         run: pytest -q
+        # Prove the credential-free path: if the code silently starts requiring a key, CI goes red.
+        env:
+          OPENAI_API_KEY: ""
+          COHERE_API_KEY: ""
+          QDRANT_API_KEY: ""
 
       - name: Start the local vector store for offline evaluation
         run: |
@@ -51,6 +62,11 @@ jobs:
           --source data/raw
           --embedder fake
           --recreate-collection
+        # Prove the credential-free path: if the code silently starts requiring a key, CI goes red.
+        env:
+          OPENAI_API_KEY: ""
+          COHERE_API_KEY: ""
+          QDRANT_API_KEY: ""
 
       - name: Run both evaluation tiers with offline providers
         run: >-
@@ -58,6 +74,11 @@ jobs:
           --tier all
           --embedder fake
           --llm fake
+        # Prove the credential-free path: if the code silently starts requiring a key, CI goes red.
+        env:
+          OPENAI_API_KEY: ""
+          COHERE_API_KEY: ""
+          QDRANT_API_KEY: ""
 
       - name: Show vector-store logs after a failure
         if: failure()
