@@ -231,18 +231,19 @@ def test_a_non_dry_run_without_a_store_is_refused() -> None:
         )
 
 
-def test_a_document_that_yields_no_chunks_does_not_abort_the_run(corpus: Path) -> None:
+def test_a_short_document_is_ingested_as_one_chunk(corpus: Path) -> None:
     (corpus / "notes" / "stub.md").write_text("# Stub\n\ntoo short\n", encoding="utf-8")
     result = _run(corpus, InMemoryVectorStore())
     assert result.documents_scanned == 4
-    assert result.documents_ingested == 3
-    assert result.documents_without_chunks == 1
+    assert result.documents_ingested == 4
+    assert result.documents_without_chunks == 0
+    assert result.per_document["notes/stub.md"] == 1
 
 
 def test_dropped_short_fragments_are_counted(corpus: Path) -> None:
     result = run_ingest(
         source_dir=corpus,
-        config=_config(min_chunk_chars=10_000),
+        config=_config(chunk_size=100, chunk_overlap=0, min_chunk_chars=150),
         embedder=FakeEmbeddingProvider(),
         store=InMemoryVectorStore(),
     )

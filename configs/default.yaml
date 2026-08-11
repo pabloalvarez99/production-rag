@@ -69,9 +69,9 @@ ingest:
     # Recursive splitting on structural boundaries first (headings, then
     # paragraphs, then sentences), falling back to a hard character cut.
     strategy: recursive
-    chunk_size: 800 # characters, not tokens: cheaper to compute, close enough
+    chunk_size: 800 # hard character ceiling, including overlap; unbreakable text is hard-cut
     chunk_overlap: 120 # ~15%: enough to keep a sentence straddling a boundary
-    min_chunk_chars: 120 # drop fragments that carry no retrievable signal
+    min_chunk_chars: 120 # drop split fragments only; a shorter whole document is kept
     separators: ["\n## ", "\n### ", "\n\n", "\n", ". ", " "]
     # Prefix each chunk with its document title + heading path before
     # embedding. Cheap, and measurably helps on short queries.
