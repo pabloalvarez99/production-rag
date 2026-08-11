@@ -23,7 +23,7 @@ from __future__ import annotations
 import hashlib
 import math
 import struct
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Protocol, runtime_checkable
 
 import structlog
@@ -94,10 +94,15 @@ class FakeEmbeddingProvider:
     with a real embedder; this one measures that the plumbing is correct.
     """
 
-    def __init__(self, dimensions: int = FAKE_DIMENSIONS) -> None:
+    def __init__(
+        self,
+        dimensions: int = FAKE_DIMENSIONS,
+        usage_recorder: Callable[..., None] | None = None,
+    ) -> None:
         if dimensions <= 0:
             raise ValueError(f"dimensions must be positive, got {dimensions}")
         self._dimensions = dimensions
+        self._usage_recorder = usage_recorder
 
     @property
     def model(self) -> str:
@@ -111,11 +116,17 @@ class FakeEmbeddingProvider:
 
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
         """Embed every input deterministically."""
-        return [self._vector(text) for text in texts]
+        vectors = [self._vector(text) for text in texts]
+        if texts and self._usage_recorder is not None:
+            self._usage_recorder(kind="documents", items=len(texts), prompt_tokens=0)
+        return vectors
 
     def embed_query(self, text: str) -> list[float]:
         """Embed a query with the same function used for documents."""
-        return self._vector(text)
+        vector = self._vector(text)
+        if self._usage_recorder is not None:
+            self._usage_recorder(kind="query", items=1, prompt_tokens=0)
+        return vector
 
     def _vector(self, text: str) -> list[float]:
         """Expand the digest of *text* into a unit vector of the right length."""
@@ -157,6 +168,7 @@ class OpenAIEmbeddingProvider:
         batch_size: int = 128,
         max_retries: int = 5,
         timeout_seconds: float = 30.0,
+        usage_recorder: Callable[..., None] | None = None,
     ) -> None:
         if not api_key:
             raise EmbeddingError(
@@ -170,6 +182,7 @@ class OpenAIEmbeddingProvider:
         self._max_retries = max_retries
         self._timeout_seconds = timeout_seconds
         self._client: object | None = None
+        self._usage_recorder = usage_recorder
 
     @property
     def model(self) -> str:
@@ -209,14 +222,16 @@ class OpenAIEmbeddingProvider:
         for start in range(0, len(texts), self._batch_size):
             batch = list(texts[start : start + self._batch_size])
             _log.debug("embedding_batch", size=len(batch), model=self._model)
-            vectors.extend(self._embed_batch(client, batch))
+            vectors.extend(self._embed_batch(client, batch, kind="documents"))
         return vectors
 
     def embed_query(self, text: str) -> list[float]:
         """Embed a single query string."""
-        return self.embed_documents([text])[0]
+        return self._embed_batch(self._get_client(), [text], kind="query")[0]
 
-    def _embed_batch(self, client: object, batch: list[str]) -> list[list[float]]:
+    def _embed_batch(
+        self, client: object, batch: list[str], *, kind: str
+    ) -> list[list[float]]:
         """Call the embeddings endpoint once and unpack the response in order."""
         try:
             response = client.embeddings.create(  # type: ignore[attr-defined]
@@ -229,6 +244,14 @@ class OpenAIEmbeddingProvider:
             # not put it in exception text.
             raise EmbeddingError(f"embedding request failed: {type(exc).__name__}: {exc}") from exc
 
+        usage = getattr(response, "usage", None)
+        prompt_tokens = getattr(usage, "prompt_tokens", None)
+        if prompt_tokens is None:
+            prompt_tokens = getattr(usage, "total_tokens", None)
+        if self._usage_recorder is not None:
+            self._usage_recorder(
+                kind=kind, items=len(batch), prompt_tokens=prompt_tokens
+            )
         ordered = sorted(response.data, key=lambda item: item.index)
         return [list(item.embedding) for item in ordered]
 
@@ -239,6 +262,7 @@ def build_embedder(
     config: EmbeddingConfig,
     api_key: str | None = None,
     fake_dimensions: int = FAKE_DIMENSIONS,
+    usage_recorder: Callable[..., None] | None = None,
 ) -> EmbeddingProvider:
     """Construct an embedding provider by name.
 
@@ -247,6 +271,7 @@ def build_embedder(
         config: The ``ingest.embedding`` block, for model name and batching.
         api_key: Credential for the real provider. Ignored by the fake one.
         fake_dimensions: Vector length for the fake provider.
+        usage_recorder: Optional response-accounting callback used by evals.
 
     Returns:
         A provider satisfying :class:`EmbeddingProvider`.
@@ -255,7 +280,9 @@ def build_embedder(
         EmbeddingError: Unknown *kind*, or the real provider has no credential.
     """
     if kind == FAKE_EMBEDDER:
-        return FakeEmbeddingProvider(dimensions=fake_dimensions)
+        return FakeEmbeddingProvider(
+            dimensions=fake_dimensions, usage_recorder=usage_recorder
+        )
     if kind == OPENAI_EMBEDDER:
         return OpenAIEmbeddingProvider(
             api_key=api_key or "",
@@ -264,5 +291,6 @@ def build_embedder(
             batch_size=config.batch_size,
             max_retries=config.max_retries,
             timeout_seconds=config.timeout_seconds,
+            usage_recorder=usage_recorder,
         )
     raise EmbeddingError(f"unknown embedder {kind!r}; expected one of {', '.join(EMBEDDER_KINDS)}")

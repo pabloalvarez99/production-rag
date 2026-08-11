@@ -1,5 +1,4 @@
 import json
-from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -7,6 +6,8 @@ import pytest
 from production_rag.config_loader import YamlConfig
 from production_rag.evals.costs import (
     CallCounts,
+    CostAccountingError,
+    UsageLedger,
     derive_call_counts,
     estimate_cost,
     require_spending_consent,
@@ -17,8 +18,7 @@ from production_rag.evals.scorecard import CONFIG_NAMES, METRIC_NAMES, validate_
 from production_rag.evals.source_hit import GoldenCase
 from production_rag.evals.tier1_retrieval import evaluate_tier1
 from production_rag.evals.tier2_answer import evaluate_tier2
-from production_rag.generation.llm import FakeLLM, LLMResponse
-from production_rag.generation.prompts import ChatMessage
+from production_rag.generation.llm import FakeLLM
 from production_rag.ingest.models import Chunk, Document
 from production_rag.retrieval.embeddings import FakeEmbeddingProvider
 from production_rag.retrieval.hybrid import Retriever
@@ -106,22 +106,9 @@ def test_call_counts_come_from_modes_and_item_count() -> None:
 
 
 def test_estimator_matches_instrumented_fake_matrix() -> None:
-    class CountingEmbedder(FakeEmbeddingProvider):
-        query_calls = 0
-
-        def embed_query(self, text: str) -> list[float]:
-            self.query_calls += 1
-            return super().embed_query(text)
-
-    class CountingLLM(FakeLLM):
-        calls = 0
-
-        def complete(self, messages: Sequence[ChatMessage]) -> LLMResponse:
-            self.calls += 1
-            return super().complete(messages)
-
-    embedder = CountingEmbedder()
-    llm = CountingLLM()
+    ledger = UsageLedger(billed=False)
+    embedder = FakeEmbeddingProvider(usage_recorder=ledger.record_embedding)
+    llm = FakeLLM(usage_recorder=ledger.record_generation)
     store = InMemoryVectorStore(collection="counted")
     store.ensure_collection(vector_size=embedder.dimensions, with_sparse=True)
     document = Document(source_path="source.md", text="hybrid retrieval evidence", title="x")
@@ -164,7 +151,16 @@ def test_estimator_matches_instrumented_fake_matrix() -> None:
         llm_provider="fake",
         judge_provider="none",
     )
-    assert predicted == CallCounts(1, embedder.query_calls, llm.calls, 0)
+    assert predicted == ledger.calls
+    assert ledger.cost_usd == 0.0
+
+
+def test_paid_response_without_usage_fails_accounting() -> None:
+    ledger = UsageLedger(billed=True)
+    with pytest.raises(CostAccountingError, match="embedding response"):
+        ledger.record_embedding(kind="query", items=1, prompt_tokens=None)
+    with pytest.raises(CostAccountingError, match="generation response"):
+        ledger.record_generation(prompt_tokens=10, completion_tokens=None)
 
 
 @pytest.mark.parametrize(

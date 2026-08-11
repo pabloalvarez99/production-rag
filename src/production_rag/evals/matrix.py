@@ -21,6 +21,7 @@ from production_rag.config import get_settings
 from production_rag.config_loader import load_yaml_config
 from production_rag.evals.costs import (
     MODEL_RATES_USD_PER_MILLION,
+    UsageLedger,
     derive_call_counts,
     estimate_cost,
     exact_token_count,
@@ -67,7 +68,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--embedder", choices=("fake", "openai"), default="fake")
     parser.add_argument("--llm", choices=("fake", "openai"), default="fake")
     parser.add_argument("--judge", choices=("none",), default="none")
-    parser.add_argument("--actual-cost-usd", type=float, default=0.0)
     parser.add_argument("--ingest", action="store_true", help="Ingest once before the sweep.")
     parser.add_argument("--yes-spend", action="store_true")
     parser.add_argument("--checkpoint", default="data/eval/reports/matrix-checkpoint.json")
@@ -257,9 +257,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     _print_estimate(estimate)
     require_spending_consent(billed=billed, yes_spend=args.yes_spend)
-    if billed != (args.actual_cost_usd > 0.0):
-        raise ValueError("billed runs require --actual-cost-usd > 0; free runs require 0")
-    embedder = resolve_embedder(args.embedder, config=config, settings=settings)
+    ledger = UsageLedger(billed=billed, upper_bound_usd=estimate.upper_bound_usd)
+    embedder = resolve_embedder(
+        args.embedder,
+        config=config,
+        settings=settings,
+        usage_recorder=ledger.record_embedding,
+    )
     url = args.qdrant_url or settings.qdrant_url
     if args.ingest:
         ingest_store = resolve_store(
@@ -295,6 +299,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.llm,
         config=config.generation,
         api_key=settings.openai_api_key or os.environ.get(config.generation.api_key_env),
+        usage_recorder=ledger.record_generation,
     )
     assert_collection_embedder(store, expected_model=embedder.model)
     judge = None
@@ -336,12 +341,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         chunks=chunks,
         golden_path=args.golden.replace("\\", "/"),
         corpus_path=args.corpus.replace("\\", "/"),
-        cost_usd=args.actual_cost_usd,
+        cost_usd=ledger.cost_usd,
         cost_estimate_usd=estimate.upper_bound_usd,
         cost_expected_usd=estimate.expected_usd,
         billed=billed,
     )
     _write_json(Path(args.report), scorecard)
+    print(
+        f"Cost summary: bound=${estimate.upper_bound_usd:.6f}; "
+        f"expected=${estimate.expected_usd:.6f}; actual=${ledger.cost_usd:.6f}"
+    )
     print(json.dumps(scorecard, sort_keys=True))
     return 0
 

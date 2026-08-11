@@ -26,7 +26,7 @@ and "the pipeline refused" stay one decision made in one place.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -132,7 +132,13 @@ class FakeLLM:
     persuading a real model to decline.
     """
 
-    def __init__(self, *, max_sentences: int = 2, model: str = FAKE_MODEL) -> None:
+    def __init__(
+        self,
+        *,
+        max_sentences: int = 2,
+        model: str = FAKE_MODEL,
+        usage_recorder: Callable[..., None] | None = None,
+    ) -> None:
         """Configure the double.
 
         Args:
@@ -140,9 +146,11 @@ class FakeLLM:
                 multi-citation answers are exercised, few enough that the output
                 stays readable in a CLI.
             model: Identifier reported in the result.
+            usage_recorder: Optional response-accounting callback used by evals.
         """
         self._max_sentences = max(1, max_sentences)
         self._model = model
+        self._usage_recorder = usage_recorder
 
     @property
     def model(self) -> str:
@@ -157,13 +165,17 @@ class FakeLLM:
         )
         blocks = parse_context_blocks(user)
         if not blocks:
-            return LLMResponse(text=ABSTAIN_TOKEN, model=self._model, finish_reason="abstain")
+            response = LLMResponse(text=ABSTAIN_TOKEN, model=self._model, finish_reason="abstain")
+            self._record_usage(response)
+            return response
 
         question = user.rsplit(_QUESTION_HEADER, 1)[-1]
         question_terms = _substantive_terms(question)
         context_terms = _substantive_terms(" ".join(body for _, body in blocks))
         if question_terms and question_terms.isdisjoint(context_terms):
-            return LLMResponse(text=ABSTAIN_TOKEN, model=self._model, finish_reason="abstain")
+            response = LLMResponse(text=ABSTAIN_TOKEN, model=self._model, finish_reason="abstain")
+            self._record_usage(response)
+            return response
 
         sentences = [
             _cited_sentence(_first_sentence(body), marker)
@@ -173,8 +185,19 @@ class FakeLLM:
         if not sentences:
             # Blocks that are whitespace once the header is stripped carry no
             # quotable evidence. Abstaining beats emitting a bare marker.
-            return LLMResponse(text=ABSTAIN_TOKEN, model=self._model, finish_reason="abstain")
-        return LLMResponse(text=" ".join(sentences), model=self._model, finish_reason="stop")
+            response = LLMResponse(text=ABSTAIN_TOKEN, model=self._model, finish_reason="abstain")
+            self._record_usage(response)
+            return response
+        response = LLMResponse(text=" ".join(sentences), model=self._model, finish_reason="stop")
+        self._record_usage(response)
+        return response
+
+    def _record_usage(self, response: LLMResponse) -> None:
+        if self._usage_recorder is not None:
+            self._usage_recorder(
+                prompt_tokens=response.prompt_tokens or 0,
+                completion_tokens=response.completion_tokens or 0,
+            )
 
 
 class OpenAILLM:
@@ -199,6 +222,7 @@ class OpenAILLM:
         timeout_seconds: float = 60.0,
         max_retries: int = 3,
         client: Any | None = None,
+        usage_recorder: Callable[..., None] | None = None,
     ) -> None:
         """Configure the provider. No connection is opened until :meth:`complete`.
 
@@ -218,6 +242,7 @@ class OpenAILLM:
         self._timeout_seconds = timeout_seconds
         self._max_retries = max_retries
         self._client = client
+        self._usage_recorder = usage_recorder
 
     @property
     def model(self) -> str:
@@ -272,13 +297,19 @@ class OpenAILLM:
             raise LLMError(f"model {self._model!r} returned a message with no content")
 
         usage = getattr(response, "usage", None)
-        return LLMResponse(
+        result = LLMResponse(
             text=str(content).strip(),
             model=str(getattr(response, "model", self._model)),
             finish_reason=getattr(choices[0], "finish_reason", None),
             prompt_tokens=getattr(usage, "prompt_tokens", None),
             completion_tokens=getattr(usage, "completion_tokens", None),
         )
+        if self._usage_recorder is not None:
+            self._usage_recorder(
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=result.completion_tokens,
+            )
+        return result
 
 
 def build_llm(
@@ -286,6 +317,7 @@ def build_llm(
     *,
     config: GenerationConfig | None = None,
     api_key: str | None = None,
+    usage_recorder: Callable[..., None] | None = None,
 ) -> LLM:
     """Construct the model named by *kind*.
 
@@ -296,6 +328,7 @@ def build_llm(
         api_key: Credential for a hosted provider. Read from the environment by
             the caller — never a CLI flag, since a key on a command line ends up
             in shell history.
+        usage_recorder: Optional response-accounting callback used by evals.
 
     Raises:
         LLMError: Unknown kind, or a hosted provider with no key.
@@ -305,7 +338,7 @@ def build_llm(
     if resolved not in LLM_KINDS:
         raise LLMError(f"unknown llm {kind!r}; expected one of {', '.join(LLM_KINDS)}")
     if resolved == LLM_FAKE:
-        return FakeLLM()
+        return FakeLLM(usage_recorder=usage_recorder)
     _log.info("llm_selected", provider=LLM_OPENAI, model=settings.model)
     return OpenAILLM(
         api_key=api_key or "",
@@ -314,6 +347,7 @@ def build_llm(
         max_output_tokens=settings.max_output_tokens,
         timeout_seconds=settings.timeout_seconds,
         max_retries=settings.max_retries,
+        usage_recorder=usage_recorder,
     )
 
 

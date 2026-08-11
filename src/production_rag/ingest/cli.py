@@ -22,7 +22,7 @@ import json
 import logging
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import structlog
@@ -172,7 +172,13 @@ def _from_env_or_yaml(settings: Settings, field: str, yaml_value: str) -> str:
     return yaml_value
 
 
-def resolve_embedder(kind: str, *, config: YamlConfig, settings: Settings) -> EmbeddingProvider:
+def resolve_embedder(
+    kind: str,
+    *,
+    config: YamlConfig,
+    settings: Settings,
+    usage_recorder: Callable[..., None] | None = None,
+) -> EmbeddingProvider:
     """Build the embedding provider, reading any credential from the environment.
 
     Raises:
@@ -180,7 +186,9 @@ def resolve_embedder(kind: str, *, config: YamlConfig, settings: Settings) -> Em
     """
     embedding = config.ingest.embedding
     api_key = settings.openai_api_key or os.environ.get(embedding.api_key_env)
-    return build_embedder(kind, config=embedding, api_key=api_key)
+    return build_embedder(
+        kind, config=embedding, api_key=api_key, usage_recorder=usage_recorder
+    )
 
 
 def resolve_store(

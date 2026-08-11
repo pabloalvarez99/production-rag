@@ -40,6 +40,83 @@ class CostEstimate:
         return self.expected_usd
 
 
+class CostAccountingError(RuntimeError):
+    """A paid response cannot be accounted for exactly or crossed its bound."""
+
+
+@dataclass(slots=True)
+class UsageLedger:
+    """Accumulate response usage and price it with the preflight rate table."""
+
+    billed: bool
+    upper_bound_usd: float | None = None
+    document_embeddings: int = 0
+    query_embeddings: int = 0
+    generations: int = 0
+    embedding_tokens: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+    def record_embedding(
+        self, *, kind: str, items: int, prompt_tokens: int | None
+    ) -> None:
+        """Record one embedding response; paid responses require provider usage."""
+        if self.billed and (prompt_tokens is None or prompt_tokens < 0):
+            raise CostAccountingError("paid embedding response carried no valid usage")
+        if kind == "documents":
+            self.document_embeddings += items
+        elif kind == "query":
+            self.query_embeddings += items
+        else:
+            raise CostAccountingError(f"unknown embedding call kind {kind!r}")
+        self.embedding_tokens += prompt_tokens or 0
+        self._enforce_bound()
+
+    def record_generation(
+        self, *, prompt_tokens: int | None, completion_tokens: int | None
+    ) -> None:
+        """Record one completion response; paid responses require both counters."""
+        if self.billed and (
+            prompt_tokens is None
+            or completion_tokens is None
+            or prompt_tokens < 0
+            or completion_tokens < 0
+        ):
+            raise CostAccountingError("paid generation response carried no valid usage")
+        self.generations += 1
+        self.prompt_tokens += prompt_tokens or 0
+        self.completion_tokens += completion_tokens or 0
+        self._enforce_bound()
+
+    @property
+    def calls(self) -> CallCounts:
+        """Observed billable operations in estimator-compatible units."""
+        return CallCounts(
+            self.document_embeddings,
+            self.query_embeddings,
+            self.generations,
+            0,
+        )
+
+    @property
+    def cost_usd(self) -> float:
+        """Measured spend from response usage, never from an estimate."""
+        if not self.billed:
+            return 0.0
+        rate = MODEL_RATES_USD_PER_MILLION
+        total = self.embedding_tokens * rate["text-embedding-3-small"]
+        total += self.prompt_tokens * rate["gpt-4o-mini-input"]
+        total += self.completion_tokens * rate["gpt-4o-mini-output"]
+        return round(total / 1_000_000, 6)
+
+    def _enforce_bound(self) -> None:
+        if self.upper_bound_usd is not None and self.cost_usd > self.upper_bound_usd:
+            raise CostAccountingError(
+                f"measured spend ${self.cost_usd:.6f} exceeded preflight bound "
+                f"${self.upper_bound_usd:.6f}"
+            )
+
+
 def derive_call_counts(
     *,
     items: int,
