@@ -132,7 +132,9 @@ convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 # Tests: asserts are the point, and a descriptive test name beats a docstring.
-"tests/**/*.py" = ["S101", "D100", "D103", "PLR2004"]
+# D101/D102 for the same reason: from M2 the suites group cases into classes
+# (TestSparseSearch, TestModes), and a docstring per case would restate its name.
+"tests/**/*.py" = ["S101", "D100", "D101", "D102", "D103", "PLR2004"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"

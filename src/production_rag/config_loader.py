@@ -82,8 +82,25 @@ class EmbeddingConfig(_Section):
     timeout_seconds: float = Field(default=30.0, gt=0)
 
 
+class SparseConfig(_Section):
+    """BM25 side of the index (M2).
+
+    ``enabled`` states the target, so a corpus ingested with sparse turned off is
+    a deliberate, visible choice rather than a forgotten flag.
+    """
+
+    enabled: bool = True
+    method: str = "bm25"
+    k1: float = Field(default=1.2, ge=0.0)
+    b: float = Field(default=0.75, ge=0.0, le=1.0)
+    lowercase: bool = True
+    # A named set ("english") or "none". A wrong stopword list degrades recall
+    # quietly, which is why the value is explicit in the file.
+    stopwords: str = "english"
+
+
 class IngestConfig(_Section):
-    """Corpus discovery plus the chunking and embedding blocks."""
+    """Corpus discovery plus the chunking, embedding and sparse blocks."""
 
     source_dir: str = "data/raw"
     processed_dir: str = "data/processed"
@@ -91,6 +108,7 @@ class IngestConfig(_Section):
     exclude_globs: tuple[str, ...] = ("**/.*", "**/node_modules/**")
     chunking: ChunkingConfig = ChunkingConfig()
     embedding: EmbeddingConfig = EmbeddingConfig()
+    sparse: SparseConfig = SparseConfig()
     # Ingest is the only stage that spends real money, so skipping unchanged
     # content is the default rather than an optimisation flag.
     incremental: bool = True
@@ -105,10 +123,25 @@ class DenseVectorConfig(_Section):
     distance: str = "Cosine"
 
 
+class SparseVectorConfig(_Section):
+    """The named sparse vector M2 writes.
+
+    ``modifier`` is read but **not** applied: ingest stores full BM25 weights
+    (IDF included), so asking Qdrant for its own IDF on top would square the
+    term. The field stays visible here because the config file declares it and
+    silently ignoring a declared knob is worse than explaining it — see
+    :mod:`production_rag.retrieval.sparse`.
+    """
+
+    name: str = "sparse"
+    modifier: str = "none"
+
+
 class VectorsConfig(_Section):
-    """Vector topology. Only the dense side exists in M1 (sparse is M2)."""
+    """Vector topology: dense from M1, sparse added in M2."""
 
     dense: DenseVectorConfig = DenseVectorConfig()
+    sparse: SparseVectorConfig = SparseVectorConfig()
 
 
 class HnswConfig(_Section):
@@ -117,6 +150,18 @@ class HnswConfig(_Section):
     m: int = Field(default=16, ge=0)
     ef_construct: int = Field(default=128, gt=0)
     full_scan_threshold: int = Field(default=10_000, ge=0)
+
+
+class SearchConfig(_Section):
+    """Query-time index parameters.
+
+    ``ef`` is a build-independent knob: it trades latency for recall on every
+    search without touching the stored index, which is why it lives here and not
+    in :class:`HnswConfig`.
+    """
+
+    hnsw_ef: int = Field(default=128, gt=0)
+    exact: bool = False
 
 
 class PayloadIndexConfig(_Section):
@@ -137,6 +182,7 @@ class QdrantConfig(_Section):
     timeout_seconds: float = Field(default=30.0, gt=0)
     vectors: VectorsConfig = VectorsConfig()
     hnsw: HnswConfig = HnswConfig()
+    search: SearchConfig = SearchConfig()
     payload_indexes: tuple[PayloadIndexConfig, ...] = (
         PayloadIndexConfig(field="doc_id"),
         PayloadIndexConfig(field="source"),
@@ -153,17 +199,63 @@ class QdrantConfig(_Section):
         return self.write_consistency == "wait"
 
 
-class YamlConfig(_Section):
-    """The whole file, with only the blocks M1 consumes typed out.
+class FusionConfig(_Section):
+    """Reciprocal rank fusion parameters.
 
-    Blocks belonging to later milestones (``retrieval``, ``rerank``,
-    ``generation``, ``evals``, ``observability``) are intentionally absent and
-    ignored rather than modelled, so this class describes what the code actually
-    reads.
+    Weights stay equal until an eval says otherwise; ``rrf.py`` keeps a
+    zero-weighted branch visible so a single-branch ablation is a config change.
+    """
+
+    method: str = "rrf"
+    k: int = Field(default=60, gt=0)
+    dense_weight: float = Field(default=1.0, ge=0.0)
+    sparse_weight: float = Field(default=1.0, ge=0.0)
+
+
+class FiltersConfig(_Section):
+    """Metadata fields a query is allowed to filter on, as an allowlist."""
+
+    allowed_fields: tuple[str, ...] = ("source", "title", "tags", "created_at")
+
+
+class RetrievalConfig(_Section):
+    """Query-side knobs. Live from M2 for retrieval; generation is still M4.
+
+    ``dense_top_k`` and ``sparse_top_k`` are deliberately larger than ``top_k``:
+    fusion can only reorder what it was given, so under-retrieving per branch is
+    a recall loss no amount of fusion tuning can recover.
+    """
+
+    mode: str = "hybrid"
+    dense_top_k: int = Field(default=40, gt=0)
+    sparse_top_k: int = Field(default=40, gt=0)
+    top_k: int = Field(default=12, gt=0)
+    fusion: FusionConfig = FusionConfig()
+    # 0.0 disables the floor. Raise only with eval evidence: a threshold set too
+    # high turns a recall miss into a silent empty result.
+    score_threshold: float = Field(default=0.0, ge=0.0)
+    return_payload_fields: tuple[str, ...] = (
+        "doc_id",
+        "chunk_id",
+        "title",
+        "source_path",
+        "heading_path",
+        "text",
+    )
+    filters: FiltersConfig = FiltersConfig()
+
+
+class YamlConfig(_Section):
+    """The whole file, with only the blocks the code consumes typed out.
+
+    Blocks belonging to later milestones (``rerank``, ``generation``, ``evals``,
+    ``observability``) are intentionally absent and ignored rather than modelled,
+    so this class describes what the runtime actually reads.
     """
 
     ingest: IngestConfig = IngestConfig()
     qdrant: QdrantConfig = QdrantConfig()
+    retrieval: RetrievalConfig = RetrievalConfig()
 
 
 def load_yaml_config(path: str | Path | None = None) -> YamlConfig:

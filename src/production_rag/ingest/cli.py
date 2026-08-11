@@ -202,6 +202,7 @@ def resolve_store(
         on_disk_payload=qdrant.on_disk_payload,
         wait_for_writes=qdrant.wait_for_writes,
         upsert_batch_size=config.ingest.embedding.batch_size,
+        search_hnsw_ef=qdrant.search.hnsw_ef,
     )
 
 
