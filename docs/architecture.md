@@ -82,7 +82,7 @@ footprint stays at two containers.
 | `api` container | FastAPI app, `production_rag.main:app`. Serves `/health`, `/v1/*`. | A1 (code), A2 (image/compose) |
 | `production_rag.ingest` | Offline ingest job: walk, chunk, embed, upsert. New in M1; writes sparse vectors too from M2. | A1 |
 | `production_rag.retrieval` | Embedders, Qdrant store, and — new in M2 — the sparse encoder, the hybrid searcher and RRF fusion. | A1 |
-| `production_rag.rerank` | New in M3: the cross-encoder rerank stage and its three providers (`fake`, `local`, `cohere`), plus the fail-open wrapper. | A1 |
+| `production_rag.retrieval.rerank` | New in M3: the cross-encoder rerank stage and its three providers (`fake`, `local`, `cohere`), plus the fail-open wrapper. | A1 |
 | `production_rag.generation` | New in M4: prompt assembly under a context budget, the LLM providers (`fake`, `openai`), `[n]` marker resolution into `Citation` objects, and the refusal path. | A1 |
 | `production_rag.graph` | New in M4: the LangGraph `StateGraph` that wires normalise → retrieve → fuse → rerank → generate → cite, the rerank bypass edge and the refusal edge. Nodes are adapters; no business logic. | A1 |
 | `production_rag.query_pipeline` | New in M4: the one public entry point — `run_query()` for a one-shot call, `QueryPipeline` for a process that serves many. Everything under `graph/` and `generation/` is an implementation detail of it. | A1 |
@@ -1169,15 +1169,16 @@ Five properties of that picture are load-bearing:
   thresholds are read by nothing. See
   [evaluation](evaluation.md#thresholds).
 
-The eval path touches none of the request path's concerns: no request id, no HTTP
-status, no tracing span. Conversely the ops signals the request path emits —
+The eval path bypasses HTTP and tracing. Tier 2 still supplies a deterministic
+`eval-<case-id>` request id because it deliberately reuses the real query
+pipeline. Conversely the ops signals the request path emits —
 `timings_ms`, `invalid_markers`, `hits_used` — are not eval metrics, and the
 distinction is spelled out in
 [evaluation](evaluation.md#ops-signals-are-not-eval-metrics).
 
 ## Deployment shape
 
-Local development is the only target through M4 and it is `docker compose up -d
+Local development is the only documented target through M6 and it is `docker compose up -d
 --build`. The compose file is written to be promotion-friendly: pinned image
 tags, healthchecks on both services, named volume for the vector index, and
 secrets injected exclusively via environment (never files baked into images).

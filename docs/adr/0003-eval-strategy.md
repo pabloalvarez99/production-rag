@@ -33,18 +33,22 @@ The obvious approach, an end-to-end LLM-judged answer score, has three defects:
 Adopt a **two-tier evaluation strategy** over one golden dataset
 (`data/eval/golden.jsonl`).
 
-**Tier 1 — retrieval, deterministic and free.** Compare returned `chunk_id`s
-against hand-labelled `relevant_chunk_ids`. Metrics: `recall@k`, `mrr`,
-`ndcg@k` at k ∈ {1, 3, 5, 10}, reported **per branch** (`dense`, `sparse`,
-`fused`) as well as overall. No LLM in the loop, so it is fast, repeatable, and
-runnable on every change. `recall@5 ≥ 0.80` is the headline gate: a chunk not in
-the top 5 cannot be recovered by any downstream stage.
+**Tier 1 — retrieval, deterministic and free.** Compare returned `source_path`s
+against hand-labelled `expected_source_paths`. Metrics: `source_hit@k`,
+`source_recall@k`, `mrr`, and binary-gain `ndcg@k`, reported over the selected
+retrieval mode; branch ablation compares `dense`, `sparse`, `fused`, and
+reranked runs separately. No LLM is in the loop, so the arithmetic is fast and
+repeatable. The implemented `--fail-under-hit` gate is opt-in and defaults to
+reporting only. A chunk-level gate waits for chunk-level labels and a measured
+baseline.
 
-**Tier 2 — answer quality, sampled and judged.** An LLM judge (`gpt-4o`) scores
-`faithfulness`, `answer_relevance`, `citation_precision`, and
-`refusal_accuracy`, over a bounded sample (default 50) and **only on queries
-whose retrieval succeeded** — otherwise the judge is grading the retriever. Gate:
-`faithfulness ≥ 0.90`.
+**Tier 2 — answer behaviour, sampled and optionally judged.** Every selected
+case runs through `run_query`. Citation precision at document granularity,
+invalid-marker rate, and refusal accuracy are deterministic and judge-free;
+an `AnswerJudge` adds faithfulness and relevance. The offline default is a
+lexical `FakeJudge`, while the hosted judge is explicitly gated and remains
+uncalibrated. Tier 2 reports every selected case, including retrieval misses,
+and has no armed gate.
 
 Supporting decisions:
 
@@ -74,9 +78,9 @@ Supporting decisions:
 
 **Negative**
 
-- Hand-labelling `relevant_chunk_ids` is real work, and the labels are coupled
-  to the current chunking strategy — a chunk-size change invalidates chunk-level
-  labels and requires relabelling or a document-level fallback metric.
+- Source-level labels are coarser than passage relevance: the right document can
+  be retrieved or cited for the wrong reason. Adding `relevant_chunk_ids` later
+  is real work, and those labels will be coupled to the chunking strategy.
 - 50 golden queries is small. It is enough to catch a collapse and not enough to
   resolve a two-point difference; treat small moves as noise until the dataset
   grows.

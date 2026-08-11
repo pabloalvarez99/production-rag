@@ -1,0 +1,712 @@
+# Milestone implementation notes
+
+This document preserves the M1–M6 implementation narrative that originally lived in the README. It is a historical, operational changelog; the [README](../README.md) is the current capability-oriented surface.
+
+## Ingest (M1)
+
+M1 adds the offline ingest path and nothing else: walk a corpus directory, parse
+front matter, chunk on structural boundaries, embed the chunks (dense), and
+upsert them into Qdrant with a payload that makes every chunk citable. There is
+still no query endpoint, no hybrid retrieval, and no generation — those are M2
+and M4. No retrieval number in this repository has been measured.
+
+The job is `python -m production_rag.ingest`. Everything below is a wrapper over
+it, and it runs inside the `api` container by default so `QDRANT_URL` resolves
+to the compose hostname and nothing needs installing on the host.
+
+### The fake path — no key, no network, no spend
+
+```bash
+make ingest-dry                  # walk + chunk, report counts, write nothing
+make ingest-fake                 # ingest data/raw with the fake embedder
+make ingest-fake SOURCE=data/raw/my-corpus
+```
+
+`SOURCE` is the corpus **root**, not a document folder. Payload `source_path`
+values are relative to it, and its first path segment becomes the filterable
+`source` field — which is why the default is `data/raw` and a sample chunk reads
+as `sample/08-bm25-vs-dense.md`. That is exactly the string
+`data/eval/golden.jsonl` labels; pointing `SOURCE` deeper silently stops those
+labels matching.
+
+```powershell
+.\scripts\ingest.ps1 -DryRun     # Windows without make
+.\scripts\ingest.ps1
+```
+
+`--embedder fake` is a deterministic hash embedder: the same text always maps to
+the same vector, of the same declared dimensionality as the real one. That makes
+the whole path — walk, chunk, embed, upsert, count — runnable in CI and on a
+laptop with no credentials, which is the only way this stage stays testable.
+
+Its vectors carry no semantics. Any similarity or recall number measured against
+a fake-embedded collection is noise, and none is reported anywhere in this repo.
+Use it to prove the plumbing; never to make a quality claim.
+
+Verify afterwards:
+
+```bash
+python scripts/smoke_health.py       # liveness + Qdrant readiness + collection presence
+curl -s http://localhost:6333/collections/production_rag | jq .result.points_count
+```
+
+### The provider path — real embeddings, real money
+
+```bash
+cp .env.example .env             # put OPENAI_API_KEY in .env, never on the CLI
+make ingest-sample
+```
+
+```powershell
+.\scripts\ingest.ps1 -Embedder openai
+```
+
+The key is read from the environment or from the gitignored `.env` that Compose
+loads. Neither the Makefile nor the PowerShell script has a flag to pass it,
+because a credential on the command line lands in shell history and in `docker
+inspect` output.
+
+Embedding is the only stage in this system that costs money per document, which
+is why the content hash and the incremental skip sit *before* the embed call.
+Re-running ingest over an unchanged corpus is nearly free; `make ingest-dry`
+reports the chunk count, and that count times the average chunk size is the
+token bill you are about to pay.
+
+### Corpus and golden set
+
+`data/raw/sample/` holds nine committed Markdown documents on RAG mechanics —
+enough for chunking to produce a meaningful number of chunks and for the
+exact-token versus paraphrase distinction to be visible.
+`data/eval/golden.jsonl` holds a 14-item seed set labelled at *document*
+granularity (`expected_source_paths`), because chunk ids do not survive a
+chunking change and M1 is exactly when those settings move. It pins the schema
+and is explicitly not a merge gate — see [evaluation](evaluation.md).
+
+Details: [runbook](runbook.md#ingest-m1) for operations and failure modes,
+[data model](data-model.md) for the exact payload written to Qdrant,
+[architecture](architecture.md) for the stage diagram.
+
+## Retrieve (M2)
+
+M2 makes retrieval real. Sparse BM25 vectors are written alongside the dense
+ones at ingest, both named vectors are queried for every question, and the two
+ranked lists are fused with reciprocal rank fusion. This is the milestone where
+the hybrid claim at the top of this README stops being a plan.
+
+**What is live: retrieval. What is not: generation.** There is no
+`POST /v1/query`, no LLM call, no answer, no citations. Retrieval is a batch
+command that prints ranked passages. Reranking is M3; generation and the HTTP
+query surface are M4.
+
+```
+  question
+     │
+     ├─────────────────────┬──────────────────────┐
+     ▼                     ▼                      │
+  embed(query)        tokenise → BM25             │
+     │ dense vector        │ sparse vector        │
+     ▼                     ▼                      │
+  Qdrant `dense`      Qdrant `sparse`             │  one collection,
+  cosine kNN          dot product = BM25          │  one round trip
+  40 candidates       40 candidates               │
+     │                     │                      │
+     └──────────┬──────────┘                      │
+                ▼                                 │
+     RRF:  score = Σ w / (60 + rank)  ────────────┘
+                ▼
+     threshold, then top 12
+                ▼
+     hits[] carrying per-branch ranks
+```
+
+Every fused hit carries the rank it held in each branch that returned it, and
+that branch's share of the fused score. "Second, because BM25 ranked it 1st and
+dense ranked it 14th" is a debuggable statement; a bare fused score is not. A hit
+ranked by `sparse` and not `dense` is a document the embedding branch never
+returned — hybrid retrieval doing the thing it was adopted for, visible rather
+than assumed.
+
+### Migration: an M1 collection must be rebuilt
+
+M1 created the collection with `dense` as its only named vector. It did **not**
+pre-declare an empty `sparse` vector, so M2 is a migration rather than a
+backfill, and a collection left over from M1 cannot serve hybrid retrieval:
+
+```bash
+make reingest-fake       # drop + re-ingest with both vectors
+```
+
+```powershell
+.\scripts\ingest.ps1 -Recreate
+```
+
+Free on the fake embedder. On the `openai` path it re-embeds and re-bills every
+chunk, because the collection the content-hash skip compares against is the one
+being dropped — `make ingest-dry` prices it first. Sparse encoding itself costs
+nothing: it is arithmetic over the corpus, not a provider call.
+
+Querying a pre-M2 collection aborts with an explicit message instead of quietly
+degrading to dense-only. A hybrid system that silently stops being hybrid loses
+the recall it was built for and reports nothing.
+
+### Asking a question
+
+The retrieval primitives — BM25 encoding, both search paths on the store, RRF
+fusion — are in place and unit-tested offline. The commands below are the agreed
+operator surface over them (`python -m production_rag.retrieval`, logs on stderr,
+a JSON object as the last line of stdout, exit `0`/`1`/`2` exactly as the ingest
+job does). Until that entry point lands they fail with a module-not-found error,
+which is the correct outcome.
+
+```bash
+make retrieve-fake QUERY="how does reciprocal rank fusion work"
+make retrieve-fake QUERY="QDRANT__SERVICE__GRPC_PORT" MODE=sparse
+make retrieve-fake QUERY="what is a cross-encoder" TOPK=5
+```
+
+```powershell
+.\scripts\retrieve.ps1 -Query "how does reciprocal rank fusion work"
+.\scripts\retrieve.ps1 -Query "QDRANT__SERVICE__GRPC_PORT" -Mode sparse
+```
+
+`MODE` / `-Mode` accepts `hybrid` (default), `dense` or `sparse`. The
+single-branch modes exist to attribute a regression: a fused score that never
+beats its best branch is a fusion problem, not a retriever problem.
+
+### fake vs openai — what each path is good for
+
+The embedder used at query time **must** match the one that built the
+collection. Nothing detects a mismatch: both produce 1536 dimensions, the search
+succeeds, and the hits are confidently ranked noise.
+
+| | `--embedder fake` | `--embedder openai` |
+|---|---|---|
+| API key | none | `OPENAI_API_KEY`, from `.env` or the environment |
+| Network | none | HTTPS per batch of chunks, and per query |
+| Cost | zero | per chunk at ingest, per query at retrieval |
+| Dense vectors | deterministic hashes of the text — same input, same vector | `text-embedding-3-small`, 1536-d |
+| Dense branch | semantically meaningless; a paraphrase match is luck | real semantic retrieval |
+| **Sparse branch** | **genuinely lexical** — BM25 weights are computed from the text in pure Python, no model involved | identical; the embedder does not touch it |
+| Runs in CI | yes | no |
+| Quality claims | never | with the corpus, chunking and k values stated |
+
+The row that surprises people is the sparse one. The fake path is not a
+simulation of half the system: the lexical branch is the real thing, so
+exact-token retrieval can be exercised and measured with no credentials at all.
+Only the dense side is a stand-in.
+
+### Scoring the golden set
+
+```bash
+make eval-hit-fake       # source-level hit@k over data/eval/golden.jsonl
+```
+
+```powershell
+.\scripts\eval_hit.ps1 -PerBranch
+```
+
+`scripts/eval_hit.py` asks one question per golden item: did any retrieved chunk
+come from a labelled document? That is `hit@k` — coarser than `recall@k`, and
+the only metric the current document-level labels support.
+
+It reports and never gates. No thresholds, no non-zero exit on a low score:
+gating a 14-item seed set would be theatre, and the larger evaluation harness
+and a CI gate were deferred to M6.
+
+**How to read the number.** On a `fake`-embedded collection it is a plumbing
+assertion — the corpus is indexed, both branches return, fusion orders, and the
+payload paths match the labels. Only the sparse branch's contribution reflects
+anything about retrieval. On `openai` it is a real measurement over 14 items,
+which is to say a smoke test with error bars a whole document wide: one item
+moves `hit@5` by seven points. Neither number is a quality claim, and neither
+should ever be quoted without the embedder that produced it.
+
+If `hit@k` reads exactly `0.00` at every k, the labels and the stored paths
+disagree — almost always because ingest ran with `SOURCE=data/raw/sample`, which
+strips the `sample/` prefix every label expects.
+
+Details: [runbook](runbook.md#retrieve-m2) for operations and failure modes,
+[architecture](architecture.md#retrieval-flow-m2--live) for the fusion
+mechanics, [evaluation](evaluation.md#status-after-m6) for what is and is
+not measured, [ADR 0001](adr/0001-hybrid-qdrant.md) — now **Accepted** — for
+why hybrid on one collection.
+
+## Rerank (M3)
+
+M3 adds the stage between fusion and everything downstream: a **cross-encoder
+that rescores the fused candidates** and keeps the best few. It is opt-in,
+fail-open, and ships with three providers — one of which is deliberately fake.
+
+**What is live: reranking. What is still not: generation.** No `POST /v1/query`,
+no LLM call, no answer, no citations. Reranking reorders passages; it is the last
+stage of retrieval, not the first stage of an answer. That is M4.
+
+### Why a reranker after RRF
+
+RRF is scale-free by construction — it sums `1/(k + rank)` over the branches that
+returned a document, so cosine similarity and BM25 scores never have to be
+calibrated against each other. That property costs magnitude: a document that is
+overwhelmingly the best match contributes exactly what a merely adequate one at
+the same rank contributes.
+
+Worse, neither branch ever reads the query and the passage *together*. The dense
+branch compares two independently produced vectors; the sparse branch sums
+per-term weights. The predictable result is the failure everyone recognises from
+a first RAG build: the top 12 are all on-topic and the passage that actually
+answers the question is fourth.
+
+A cross-encoder scores the pair in one forward pass, with attention across both
+texts. It is accurate precisely because it cannot be precomputed — which is also
+why it runs over a shortlist instead of being the retriever.
+
+```
+  fused candidates (RRF, recall-oriented)
+        │  40
+        ▼
+  ┌─────────────────────────────────────────┐
+  │ CROSS-ENCODER — score(query, passage)   │   fake | local | cohere
+  │ one forward pass per pair, ties break   │   on error: fusion order,
+  │ on the fusion rank so runs repeat       │   reported, never silent
+  └────────────────┬────────────────────────┘
+        │  6
+        ▼
+  hits[] + pre_rerank_rank + rerank_score
+```
+
+**Retrieval owns recall; rerank owns precision at the top.** The stage never
+queries Qdrant and never introduces a document fusion did not return.
+
+### `input_top_k` (40) > `top_k` (6), on purpose
+
+The reranker is fed more than it keeps. Handing it exactly the number that
+survives makes it a no-op sorter of an already-final list; handing it 40 lets it
+lift a passage buried at rank 30 into position 2 — the case the stage exists for.
+
+Cost is linear in `input_top_k` (40 candidates = 40 forward passes, or 40
+passages on the wire), so it is the price dial. The flip side is a hard ceiling:
+with rerank on, a chunk outside that window is unreachable by construction, which
+is why every result reports how many candidates the stage actually saw.
+
+### fake vs local vs cohere
+
+| `--rerank` | Model | Needs | What it is for |
+|---|---|---|---|
+| `off` *(default)* | — | — | plain M2 behaviour |
+| `fake` | query-term overlap, pure Python | nothing: no key, no download, no network | **plumbing only.** CI, offline laptops, contract tests |
+| `local` | `BAAI/bge-reranker-base` on CPU | `sentence-transformers` + a ~1.1 GB one-time download | real reranking, no per-query spend, no passage leaves the machine |
+| `cohere` | `rerank-english-v3.0` | the `cohere` package + `COHERE_API_KEY` | hosted swap when a deployment cannot host a model |
+| `auto` | from `rerank.provider` | depends | the YAML is the switch for a deployment |
+
+`fake` carries the same warning as the fake embedder, one stage later. It is
+deterministic — so tests can assert an order — and it **models nothing**: it
+scores lexical coverage, a cruder version of what BM25 already did. Under it the
+flag path, the candidate arithmetic, the fail-open branch, the emitted fields and
+the JSON contract are all genuinely exercised. Its *ordering* is not.
+
+Said plainly: **rerank plumbing runs everywhere; rerank quality exists only on
+`local` or `cohere`.** No ordering number produced by `fake` appears anywhere in
+this repository, and none should.
+
+### `fail_open` — degrade the ordering, never the availability
+
+If the reranker errors or times out, the stage logs it and returns **fusion
+order**; the query succeeds. The un-reranked result is correct in kind, only
+ordered worse — availability beats a few points of nDCG.
+
+That is the opposite of how a *missing capability* is treated: a collection with
+no `sparse` vector aborts, because the system would otherwise be silently
+unhybrid. A missing improvement is not a missing capability.
+
+Never silent, either way. Every result carries `rerank: {applied, reranker,
+candidates, error}`, present even when nothing reranked, and a reranked hit adds
+`pre_rerank_rank` and `rerank_score` — so "the cross-encoder pulled this from
+rank 27 to rank 2" is measurable rather than felt. `fail_open: false` exists for
+a deployment that would rather fail the request, and means a provider outage is
+an outage.
+
+### Running it
+
+```bash
+docker compose run --rm api python -m production_rag.retrieve \
+    --query "what is a cross-encoder" --rerank fake     # plumbing, no credentials
+docker compose run --rm api python -m production_rag.retrieve \
+    --query "what is a cross-encoder" --rerank local    # the real thing
+```
+
+```powershell
+.\scripts\retrieve_rerank.ps1 -Query "what is a cross-encoder"
+.\scripts\retrieve_rerank.ps1 -Query "what is a cross-encoder" -Rerank local
+.\scripts\retrieve_rerank.ps1 -Query "what is a cross-encoder" -Rerank local -Compare
+```
+
+`-Compare` runs the query twice — rerank off, then on — because an ordering on
+its own is not evidence and a delta is. `scripts/retrieve.ps1` stays the plain M2
+surface and is unchanged.
+
+### What it is worth, measured honestly
+
+No pre/post number is quoted here. The procedure that produces one is in
+[evaluation.md](evaluation.md#pre--and-post-rerank-hitk): score the golden
+set with the stage off, then on, changing nothing else, and compare `hit@k` at
+`k ≤ rerank.top_k` — comparing above that cut shows a fake regression, because
+the reranked run was only asked for six hits. `hit@k` also under-reports the
+stage: moving the answer from rank 5 to rank 1 changes `hit@1` and nothing else.
+`nDCG` is the metric that sees a reordering, and it needs graded chunk-level
+labels — M6.
+
+On a 14-item set with a `fake` embedder, that comparison measures plumbing twice.
+
+Details: [ADR 0004](adr/0004-rerank-cross-encoder.md) for the decision and
+the alternatives, [runbook](runbook.md#rerank-m3--off-by-default-opt-in-per-run)
+for operations, model download and failure modes,
+[architecture](architecture.md#why-rerank-runs-after-rrf-and-not-instead-of-it)
+for where the stage sits, [data model](data-model.md#the-two-m3-fields-and-why-they-are-optional-keys)
+for the two fields a reranked hit gains.
+
+## Query API (M4)
+
+M4 closes the path: the stages above are now orchestrated as a **LangGraph
+graph** behind **`POST /v1/query`**, and the graph ends in **grounded
+generation** — an answer whose every claim carries an inline `[n]` citation
+resolved back to a retrieved chunk, or an explicit refusal when the corpus does
+not support one.
+
+Everything before this milestone returned passages. This is the first surface
+that returns prose, which is the point at which a retrieval system acquires the
+ability to be confidently wrong. The two design answers are
+[ADR 0005](adr/0005-grounded-generation.md): **every claim is cited, and
+refusal beats invention.**
+
+```console
+$ curl -s localhost:8000/v1/query -H 'content-type: application/json' \
+    -d '{"question": "how does reciprocal rank fusion work", "llm": "openai"}' | jq -c
+{
+  "answer": "RRF sums 1/(k + rank) over the branches that returned a document [1], which is why cosine and BM25 scores never have to be calibrated against each other [2].",
+  "citations": [
+    {"marker": 1, "chunk_id": "9f2c…:0003", "source_path": "sample/05-rrf.md",           "rank": 1, "…": "…"},
+    {"marker": 2, "chunk_id": "1a7b…:0007", "source_path": "sample/08-bm25-vs-dense.md", "rank": 3, "…": "…"}
+  ],
+  "refused": false,
+  "refusal_reason": null
+}
+```
+
+### The `[n]` contract
+
+`[3]` is an **ordinal into the numbered blocks of the prompt this request
+rendered** — not into the retrieval result, which is longer whenever the context
+budget truncated. Resolution is therefore a lookup, not a heuristic: no
+similarity matching between a generated sentence and a passage happens anywhere,
+because that attributes fluency rather than provenance.
+
+- Citations appear in first-appearance order, deduplicated; a passage cited three
+  times appears once.
+- A marker outside the rendered range (`[9]` when six blocks were sent) is
+  **stripped from the answer and recorded** in `invalid_markers` — never left as
+  a footnote that goes nowhere. Recording it turns "the model invents citations"
+  into a measurable statement.
+- Surviving markers are **not renumbered**: an answer citing only `[3]` keeps
+  `[3]`, so it still lines up with the prompt that produced it.
+- Markers are request-scoped and mean nothing tomorrow. What is durable is the
+  `chunk_id` inside the resolved citation. Clients store citations, never markers.
+
+### Refusal is a first-class outcome
+
+When no retrieved chunk clears the evidence bar, **the generate node is never
+entered**: no provider call is made and nothing is billed. The response is a
+**200** with `refused: true`, `citations: []` and `refusal_reason: no_evidence`.
+
+There are two refusal points, and the reason code says which fired:
+`no_evidence` (before the call, free), `model_abstained` (the model emitted the
+`INSUFFICIENT_CONTEXT` sentinel), `no_citations` (nothing in the answer resolved,
+with `require_citation` on), `empty_answer`. A closed set, so an operator can
+alert on one and an eval can group by them — and clients branch on `refused` and
+`refusal_reason`, never on the message string, which is config.
+
+The design point is *who decides*. Asking the model to refuse when appropriate
+delegates the judgement to the component whose documented failure mode is exactly
+that judgement: a fluent, plausible answer assembled from parametric memory and
+the topical vocabulary of whatever passages it was handed. Deciding in the graph
+makes the refusal deterministic, free and testable with no provider at all.
+
+A refusal is not an error status. Nothing failed — the system was asked something
+the corpus does not cover and said so. The accepted cost, stated plainly: a
+question whose supporting chunk was never retrieved now yields a refusal, so
+**answer-path recall is capped by retrieval recall**, and a spike in refusals is
+a retrieval investigation rather than a prompt one.
+
+### fake vs openai — what each generator is for
+
+| | `--llm fake` *(default)* | `--llm openai` |
+|---|---|---|
+| API key | none | `OPENAI_API_KEY`, from `.env` or the environment |
+| Network / cost | none / zero | HTTPS per query / per token |
+| Answer | deterministic extractive stitching of the top passages | `gpt-4o-mini`, temperature 0.1 |
+| `[n]` markers, refusal edge, response schema | fully exercised | fully exercised |
+| Reasoning, synthesis across passages | **none** | real |
+| Runs in CI | yes | no |
+| Quality claims | never | with corpus, chunking, k values and model stated |
+
+Third instance of the same pattern in this repository, after the fake embedder
+and the fake reranker: **the generation contract is live everywhere; answer
+quality exists only on `openai`.** The fake generator genuinely exercises
+budgeting, prompt rendering, marker resolution, out-of-range dropping, the
+refusal edge, the per-stage timings and the endpoint — offline and
+deterministically. It does not reason, and no answer it produced is evidence of
+anything but wiring.
+
+### Running it
+
+```bash
+make query-fake QUERY="how does reciprocal rank fusion work"          # offline, free
+
+docker compose run --rm api python -m production_rag.query \
+    --question "how does reciprocal rank fusion work" --llm openai    # billed
+```
+
+`make query-fake` requires `QUERY="…"` and exits 2 without it. There is
+deliberately no `make` target for the billed path — spending stays an explicit
+command rather than a habit.
+
+The CLI (`python -m production_rag.query`) and the endpoint run the same graph.
+The CLI prints the richer library object; the endpoint returns the four response
+fields. The M2/M3 retrieve command has not gone anywhere: it is still how you
+inspect ranked passages without spending a generation call.
+
+### One request, one id
+
+`X-Request-ID` is echoed on the response **header** and on every log line the
+request emits — an absent or malformed one is replaced with a fresh UUID4. It is
+deliberately not in the response body. One question is now an embedding call, two Qdrant searches, a
+possible rerank provider call and an LLM call; that id is what stitches them back
+together when an answer is slow or wrong. Traces proper are M5; this is the seam
+they attach to.
+
+Secrets stay out of all of it: keys are referenced by env-var **name** in config,
+`Settings.safe_dump()` masks and a test asserts it, prompt and passage text are
+not logged at INFO (`log_prompts`, `log_retrieved_text` default to `false` —
+turning them on in a deployment makes the log aggregator a copy of the corpus),
+and provider error bodies stay server-side because they can quote the entire
+prompt back.
+
+### What M4 does not add
+
+Measured answer quality. There is no faithfulness number, no citation-precision
+number and no Ragas harness anywhere in this repository — that is M6. M4 emits
+exactly the structured artifacts an answer metric consumes (`citations[]` with
+`chunk_id`, `refused`, `refusal_reason`, and — on the library result —
+`invalid_markers` and `uncited_claims`), so the harness will read fields rather
+than parse prose. "Every claim is citable" is a property of the
+design; "94% of claims are faithful" is a measurement, and none has been taken.
+
+Details: [ADR 0005](adr/0005-grounded-generation.md) for grounded generation
+and the refusal decision, [ADR 0002](adr/0002-langgraph-query.md) — now
+**Accepted** — for the query graph,
+[architecture](architecture.md#the-query-graph-m4) for the graph and stage
+mechanics, [runbook](runbook.md#query-m4) for operating the endpoint and its
+failure modes, [data model](data-model.md#citation) for the `Citation` and
+`QueryResponse` shapes, [evaluation](evaluation.md#status-after-m6) for what
+M4 made measurable versus what M6 will measure.
+
+## Observability (M5)
+
+M5 adds no stage. It makes the stages that exist legible, and it does so without
+putting a vendor on the critical path: **structured logs and per-node timings are
+always on and carry no third party; tracing is an opt-in export the system is
+complete without** ([ADR 0006](adr/0006-observability.md)).
+
+The problem is specific to what M4 built. Through M3 a question was one Qdrant
+round trip, so "it was slow" had one suspect. A question is now an embedding
+call, two searches, a possible rerank provider call, an LLM call and two
+guardrail checks — and the interesting failures there do not raise. The answer
+was thin because the context budget truncated. The reranker has been failing open
+for a week. The model is emitting citation markers that get stripped before
+anyone sees them. Those are numbers the system either records or does not.
+
+### Timings, always, per stage
+
+Every graph node is timed on every request — no flag, no sampling. The cost is a
+`perf_counter()` pair per stage; the alternative is asking an operator to
+reproduce a slow request that already happened.
+
+```console
+$ python -m production_rag.query --question "how does RRF work" --llm fake --debug | tail -1 | jq '{latency_ms, total_ms}'
+{
+  "latency_ms": {"retrieve": 41.2, "rerank": 0.0, "guard": 0.1, "generate": 812.6, "cite": 0.4, "finalise": 0.2},
+  "total_ms": 854.5
+}
+```
+
+A **per-node** breakdown rather than one total, because the first question about
+a slow answer is *which stage* and a total cannot answer it: `generate`
+dominating is normal, `rerank` dominating is `input_top_k`, `retrieve` dominating
+points at Qdrant rather than the LLM.
+
+### `debug` is caller-controlled, so it shows shape and never secrets
+
+The HTTP response stays four fields. `debug: true` adds a `diagnostics` object —
+and because anyone who can call the endpoint can set that flag, it may only carry
+what would be safe to publish:
+
+| Exposed under `debug` | Withheld regardless |
+|---|---|
+| per-node timings and the total | prompt text, system prompt, rendered blocks |
+| `hits_retrieved` / `hits_used` | passage text beyond the citations already returned |
+| `rerank` summary — `applied`, `candidates`, `error` | collection name, embedder, model, provider identity |
+| `invalid_markers` | credentials, in any form, at any level |
+
+`debug` answers *what the system did*, never *what the system knows*. The CLI
+differs on one axis only — it already runs inside the trust boundary, so
+`--debug` prints the whole library object.
+
+### The three signals that need no judge
+
+Produced by the request path itself, on every request, with no labels and no
+LLM: **`timings_ms`** (which stage got slow), **`invalid_markers`** (the model
+inventing citations — they are stripped from the answer, so this field is the
+only place the misbehaviour is visible), **`hits_used` vs `hits_retrieved`** (the
+context budget truncated, so retrieval order was truncation order).
+
+None of them is a quality metric, and the distinction is load-bearing rather than
+pedantic: an ops signal says what the system did, an eval metric says whether it
+was right. Zero invalid markers says nothing about whether the markers that *did*
+resolve support their sentences — that needs the M6 judge. See
+[evaluation](evaluation.md#ops-signals-are-not-eval-metrics).
+
+### Tracing is optional, and offline is the reference environment
+
+Langfuse, off by default, configured by three environment variables referenced in
+`configs/default.yaml` **by name** — never a value in a committed file. Every
+command, the endpoint, the CLI, the tests and the eval script run with nothing
+configured and no network to a trace backend, and a trace backend that is down,
+slow or misconfigured loses a diagnostic rather than a request (fail-open, in the
+same sense as the reranker).
+
+What it costs when it is on, stated plainly: a generation trace *is* the prompt
+and the answer, sent to a third party. `sample_rate` bounds volume, not
+sensitivity. Enabling it is a decision about where corpus text may go.
+
+> **Never turn on `observability.logging.log_prompts` or `log_retrieved_text` in
+> a deployment.** The prompt contains retrieved corpus text verbatim, so a log
+> aggregator with those on becomes a full copy of the corpus with none of its
+> access controls — readable by everyone with a dashboard login, retained for
+> months. It is the cheapest data leak this system offers and it produces no
+> error. Both default to `false`; they exist for a local session on a corpus you
+> own. Provider error bodies are never echoed either, because an upstream error
+> can quote the entire prompt back.
+
+### What M5 does not add
+
+No metrics endpoint (`observability.metrics` is declared, `/metrics` is not
+wired), no cost or token accounting, no per-branch timing inside `retrieve` (the
+stopwatch is around the node, so dense and sparse report as one number), and
+nothing about behaviour under load. M5 makes one request legible; it does not
+make a fleet legible.
+
+Details: [ADR 0006](adr/0006-observability.md) for the decision and its
+alternatives, [architecture](architecture.md#observability-m5) for the
+signal flow and the `debug` contract, [runbook](runbook.md#observability-m5)
+for debugging a slow query, enabling Langfuse, and the full `log_prompts`
+warning, [evaluation](evaluation.md#ops-signals-are-not-eval-metrics) for
+why none of these numbers is a quality claim.
+
+## Evaluation gate (M6)
+
+M6 makes the system measure itself offline: both tiers of
+[ADR 0003](adr/0003-eval-strategy.md) (Accepted), behind one runner, into
+one versioned report. It deliberately does **not** arm a merge gate, and the
+second half of this section is why — a gate nobody can defend is worse than no
+gate, because the pipeline still claims one.
+
+| | Tier 1 — retrieval | Tier 2 — answers |
+|---|---|---|
+| Metrics | `source_hit_at_k`, `source_recall_at_k`, `mrr`, `ndcg_at_k` | `citation_precision`, `invalid_marker_rate`, `refusal_accuracy` — then `faithfulness`, `relevance` |
+| Judge | none | none for the first three; an `AnswerJudge` for the last two |
+| Cost | free, offline, deterministic | free offline with the fake generator and judge; money with `--llm openai` / `--judge openai` |
+| Run it | on every change | on a change that touches generation, citations or the evidence bar |
+| Module | `evals.tier1_retrieval` (built on `evals.source_hit`) | `evals.tier2_answer`, answers via `run_query` |
+
+### Running it
+
+```bash
+make reingest-fake        # the eval scores what is in Qdrant; rebuild it first
+make eval-tier1           # retrieval only
+make eval-tier2-fake      # answers, fake generator and fake judge
+make eval-all-fake        # both tiers, one report
+
+# the runner directly, with knobs
+python -m production_rag.evals.run --tier all --embedder fake --llm fake     --k 5 --report data/eval/reports/all-fake.json
+```
+
+Defaults are offline — fake embedder, fake model, fake judge — so the default
+invocation is free, deterministic, CI-runnable, and a **plumbing check rather
+than a quality claim**. The report says which in `offline_defaults`, so nobody
+has to reconstruct the invocation from the score. Anything that costs money is
+opt-in twice: a flag, and for a hosted judge `RUN_LLM_EVALS=1` plus a credential.
+
+Reading the report: `score` fields come after `offline_defaults`, `embedder`,
+`llm` and `rerank`, because a number without those is not reproducible. The
+tier-1 aggregate is over **13** cases, not 17 — the four `answerable: false`
+items carry no expected path, so they are excluded as `unscored_cases`, and
+their correct outcome is a refusal that tier 2 scores instead.
+`refusal_failures` is the actionable list: a missed refusal is a hallucination
+with citations on it.
+
+### The golden set
+
+17 items with document-level labels, committed at
+[`data/eval/golden.jsonl`](../data/eval/golden.jsonl). Every item carries an
+explicit `answerable`, and four (`q-0012`, `q-0015`, `q-0016`, `q-0017`) are the
+`unanswerable` slice — the only measurement of whether the system hallucinates
+under pressure.
+
+Those four are *topically adjacent*, not off-topic, on purpose. They use the
+corpus's own vocabulary and retrieve confident, well-scoring chunks that simply
+do not contain the fact asked for: a dollar figure, a Qdrant version, a
+multilingual model recommendation. An off-topic question would only prove that
+`score_threshold` works. These probe the failure that matters — a model answering
+from pretraining once retrieval has handed it something plausible to cite.
+
+### Why no gate is armed
+
+There is exactly one gate mechanism, `--fail-under-hit`, it scores
+`source_hit_at_k`, and it defaults to `0.0` (report only):
+
+```bash
+make eval-tier1 EVAL_ARGS="--fail-under-hit 0.8"   # exit 1 if source hit@k < 0.80
+```
+
+Nothing sets it in CI yet, for reasons that are about the numbers, not the
+plumbing:
+
+- **No baseline run has been recorded.** ADR-0003 requires thresholds to come
+  from a first full run on an `openai`-embedded collection. The
+  `evals.thresholds` values in `configs/default.yaml` were written with the ADR,
+  before anything ran — and they are read by nothing, so they gate nothing
+  either.
+- **17 items cannot carry a threshold.** One item is roughly eight points of
+  source `hit@k`. A gate this size fires on noise, and a gate that fires on noise
+  gets switched off within a week.
+- **The judged columns are not gateable.** The default judge is lexical overlap;
+  the hosted one is uncalibrated. Gating a build on a non-deterministic,
+  uncalibrated proxy is how a team learns to ignore its own CI.
+- **Every metric is source-level.** `source_recall_at_k` measures documents, not
+  chunks; `citation_precision` checks that a citation points at an expected
+  *document*, not that the passage supports the sentence. The names carry the
+  `source_` prefix so a report cannot overstate itself.
+
+### One distinction worth carrying
+
+`invalid_marker_rate` is free and looks like citation quality. It is not. It
+counts markers that resolved to **nothing**; `citation_precision` asks whether
+the citations that **did** resolve came from an expected document. The two are
+disjoint, so a spotless `invalid_marker_rate` is fully compatible with every
+citation pointing at the wrong document — and both are compatible with a cited
+passage that does not support its sentence, which is the judge's question and
+nobody else's.
+
+Details: [evaluation](evaluation.md#status-after-m6) for what is and is not
+measured, how to read the report and how to interpret the gate;
+[ADR 0003](adr/0003-eval-strategy.md) for the decision and the gap between
+it and the implementation; [`data/eval/README.md`](../data/eval/README.md) for the
+schema, the optional fields and the authoring rules.

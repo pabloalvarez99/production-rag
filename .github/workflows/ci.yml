@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install development dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Type check
+        run: mypy --strict
+
+      - name: Test
+        run: pytest -q
+
+      - name: Start the local vector store for offline evaluation
+        run: |
+          docker compose up -d qdrant
+          for attempt in {1..30}; do
+            if curl --fail --silent http://localhost:6333/readyz > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker compose logs qdrant
+          exit 1
+
+      - name: Seed the deterministic evaluation collection
+        run: >-
+          python -m production_rag.ingest
+          --config configs/default.yaml
+          --source data/raw
+          --embedder fake
+          --recreate-collection
+
+      - name: Run both evaluation tiers with offline providers
+        run: >-
+          python -m production_rag.evals.run
+          --tier all
+          --embedder fake
+          --llm fake
+
+      - name: Show vector-store logs after a failure
+        if: failure()
+        run: docker compose logs qdrant
