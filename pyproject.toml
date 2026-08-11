@@ -40,6 +40,10 @@ classifiers = [
 # sat in the `rag` extra because nothing imported it; now the API's only answer
 # endpoint runs on it, and an optional dependency the service cannot start
 # without is not optional — it is an undeclared one.
+#
+# jinja2 follows the same rule: the root UI router imports Jinja2Templates at
+# application startup, so putting it in an extra would make the service unable
+# to start from a base install.
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
@@ -51,6 +55,7 @@ dependencies = [
     "qdrant-client>=1.12",
     "openai>=1.55",
     "langgraph>=0.2",
+    "jinja2>=3.1",
 ]
 
 [project.optional-dependencies]

@@ -12,10 +12,12 @@ import logging
 
 import structlog
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from structlog.typing import Processor
 
 from production_rag.api.middleware import RequestContextMiddleware
-from production_rag.api.routes import health, query, ready
+from production_rag.api.routes import health, query, ready, ui
+from production_rag.api.routes.ui import STATIC_DIR
 from production_rag.config import Settings, get_settings
 
 API_DESCRIPTION = """
@@ -93,8 +95,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.dependency_overrides[get_settings] = lambda: resolved
 
     app.add_middleware(RequestContextMiddleware)
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     # Unversioned first: infrastructure probes hit /health.
+    app.include_router(ui.router)
     app.include_router(health.unversioned_router)
     app.include_router(health.router, prefix=resolved.api_prefix)
     app.include_router(ready.router, prefix=resolved.api_prefix)

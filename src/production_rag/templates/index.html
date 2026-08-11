@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Ask the corpus · Production RAG{% endblock %}
+{% block content %}
+  <header class="hero">
+    <p class="eyebrow">Evidence first · offline capable</p>
+    <h1>Ask the corpus.</h1>
+    <p class="lede">A grounded answer when the evidence supports one. A deliberate refusal when it does not.</p>
+  </header>
+
+  <section class="query-panel" aria-labelledby="query-title">
+    <h2 id="query-title">Query</h2>
+    <form hx-post="/ui/query" hx-target="#result" hx-swap="innerHTML" hx-indicator="#querying">
+      <label for="question">Question</label>
+      <textarea id="question" name="question" rows="3" required maxlength="8000" placeholder="What does the corpus say?"></textarea>
+      <div class="examples" aria-label="Example questions">
+        <button type="button" data-question="Why does hybrid search use reciprocal rank fusion?">Answerable example</button>
+        <button type="button" data-question="What is the capital city of the Moon?">Refusal example</button>
+      </div>
+      <button class="submit" type="submit">Run grounded query</button>
+      <span id="querying" class="htmx-indicator" role="status">Looking for supporting evidence…</span>
+    </form>
+  </section>
+
+  <section id="result" class="result-region" aria-live="polite">
+    <div class="empty-prompt">Results will appear here, including evidence and pipeline timings.</div>
+  </section>
+
+  <script>
+    document.querySelectorAll('[data-question]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        document.getElementById('question').value = button.dataset.question;
+        document.getElementById('question').focus();
+      });
+    });
+  </script>
+{% endblock %}
