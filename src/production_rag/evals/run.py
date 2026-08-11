@@ -336,7 +336,13 @@ def build_report(
 
 def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901 - a CLI's error paths
     """Run the requested tiers and return the process exit code."""
-    args = build_parser().parse_args(argv)
+    effective_argv = list(argv) if argv is not None else sys.argv[1:]
+    if "--matrix" in effective_argv:
+        from production_rag.evals.matrix import main as matrix_main
+
+        effective_argv.remove("--matrix")
+        return matrix_main(effective_argv)
+    args = build_parser().parse_args(effective_argv)
     settings = get_settings()
     configure_cli_logging(args.log_level or settings.log_level)
 

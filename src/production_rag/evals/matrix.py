@@ -202,8 +202,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_cli_logging(args.log_level or settings.log_level)
     config = load_yaml_config(args.config or settings.config_path)
     cases = load_golden(args.golden)
-    embedder = resolve_embedder(args.embedder, config=config, settings=settings)
-    documents, chunks = _dry_counts(args.corpus, config, embedder, args.collection)
+    # Chunking is provider-independent. Keep the preflight free and usable
+    # before a hosted-provider credential is present.
+    counting_embedder = resolve_embedder("fake", config=config, settings=settings)
+    documents, chunks = _dry_counts(args.corpus, config, counting_embedder, args.collection)
     billed = any(provider != "fake" for provider in (args.embedder, args.llm, args.judge))
     estimate = estimate_cost(
         chunks_to_embed=chunks if args.ingest else 0,
@@ -214,6 +216,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     _print_estimate(estimate)
     require_spending_consent(billed=billed, yes_spend=args.yes_spend)
+    embedder = resolve_embedder(args.embedder, config=config, settings=settings)
     url = args.qdrant_url or settings.qdrant_url
     if args.ingest:
         ingest_store = resolve_store(
