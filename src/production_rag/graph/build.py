@@ -41,6 +41,8 @@ from production_rag.graph.state import (
     RETRIEVE_NODE,
     QueryState,
 )
+from production_rag.observability.context import current_request_id
+from production_rag.observability.tracer import guarded_span, span_attributes
 
 _NODES: tuple[tuple[str, Callable[[QueryState, QueryDeps], dict[str, object]]], ...] = (
     (RETRIEVE_NODE, retrieve_node),
@@ -65,13 +67,23 @@ class _BoundNode(Protocol):
 
 
 def _bind(
+    name: str,
     node: Callable[[QueryState, QueryDeps], dict[str, object]],
     deps: QueryDeps,
 ) -> _BoundNode:
-    """Close *node* over its dependencies, since LangGraph calls one argument."""
+    """Close *node* over its dependencies, and wrap it in a span.
+
+    Tracing attaches here rather than inside the node functions, for the reason
+    ADR-0002 keeps logic out of them: a node is an adapter, and an adapter that
+    also opens spans is one more thing to copy correctly the next time a node is
+    added. One wrapper, applied to every node, cannot be forgotten — and the
+    span name is the node name the graph registered, so a trace and a
+    ``timings_ms`` key are guaranteed to be the same string.
+    """
 
     def run(state: QueryState) -> dict[str, object]:
-        return node(state, deps)
+        with guarded_span(deps.tracer, name, **span_attributes(request_id=current_request_id())):
+            return node(state, deps)
 
     run.__name__ = node.__name__
     return run
@@ -93,7 +105,7 @@ def build_query_graph(deps: QueryDeps) -> Any:
     """
     graph: StateGraph[QueryState, None, QueryState, QueryState] = StateGraph(QueryState)
     for name, node in _NODES:
-        graph.add_node(name, _bind(node, deps))
+        graph.add_node(name, _bind(name, node, deps))
 
     graph.add_edge(START, RETRIEVE_NODE)
     graph.add_edge(RETRIEVE_NODE, RERANK_NODE)

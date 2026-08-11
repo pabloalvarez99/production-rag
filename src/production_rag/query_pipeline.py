@@ -37,10 +37,15 @@ from production_rag.generation.llm import LLM
 from production_rag.graph.build import build_query_graph, run_graph
 from production_rag.graph.nodes import QueryDeps
 from production_rag.graph.state import QueryState
+from production_rag.observability.context import request_context
+from production_rag.observability.tracer import Tracer, build_tracer, guarded_span
 from production_rag.retrieval.hybrid import NO_RERANK_SUMMARY, Retriever
 from production_rag.retrieval.rerank import Reranker
 
 _log = structlog.get_logger(__name__)
+
+QUERY_SPAN = "query"
+"""Name of the span covering a whole request; the node spans nest inside it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +78,12 @@ class QueryResult:
     invalid_markers: tuple[int, ...] = ()
     uncited_claims: tuple[str, ...] = ()
     timings_ms: dict[str, float] | None = None
+    request_id: str = ""
+    """The id every log line and span for this query carries.
+
+    Returned so a caller can hand it to a user with a failure, which is the only
+    thing that makes a report searchable in an aggregator later.
+    """
 
     @property
     def total_ms(self) -> float:
@@ -100,6 +111,7 @@ class QueryResult:
             "uncited_claims": list(self.uncited_claims),
             "latency_ms": dict(self.timings_ms or {}),
             "total_ms": self.total_ms,
+            "request_id": self.request_id,
         }
 
 
@@ -122,6 +134,7 @@ class QueryPipeline:
         *,
         mode: str | None = None,
         top_k: int | None = None,
+        request_id: str | None = None,
     ) -> QueryResult:
         """Answer *query*.
 
@@ -130,6 +143,13 @@ class QueryPipeline:
             mode: ``dense``, ``sparse`` or ``hybrid``. Defaults to the configured
                 mode, which is ``hybrid``.
             top_k: Chunks to retrieve. Defaults to ``retrieval.top_k``.
+            request_id: The caller's correlation id — the one the HTTP layer
+                already put in its access log and its response header. One is
+                minted when absent, so a CLI or a notebook is correlatable too.
+                It is bound for the duration of this call and cleared after,
+                including on failure: an id that outlives its request poisons
+                every later line on that thread, and the resulting reports look
+                correlated while being wrong.
 
         Returns:
             A :class:`QueryResult`. An empty index, a stopword-only query and a
@@ -144,9 +164,17 @@ class QueryPipeline:
                 facts, and a caller that cannot tell them apart retries the
                 wrong one.
         """
-        state = run_graph(self._graph, QueryState(query=query, mode=mode, top_k=top_k))
-        _log.info("query_completed", **state.summary())
-        return _to_result(state)
+        with request_context(request_id) as bound_id:
+            try:
+                with guarded_span(self._deps.tracer, QUERY_SPAN, request_id=bound_id):
+                    state = run_graph(self._graph, QueryState(query=query, mode=mode, top_k=top_k))
+            finally:
+                # Also on the failure path: a request that raised is the one whose
+                # trace is worth having, and a short-lived process may exit before
+                # a batching client would have shipped it on its own.
+                _flush(self._deps.tracer)
+            _log.info("query_completed", **state.summary())
+            return _to_result(state, request_id=bound_id)
 
 
 def build_query_pipeline(
@@ -156,6 +184,7 @@ def build_query_pipeline(
     config: YamlConfig | None = None,
     reranker: Reranker | None = None,
     system_prompt: str | None = None,
+    tracer: Tracer | None = None,
 ) -> QueryPipeline:
     """Assemble the query pipeline from live collaborators.
 
@@ -170,6 +199,9 @@ def build_query_pipeline(
             than built here, because constructing one may need a credential from
             the environment and this is not the place that reads secrets.
         system_prompt: Overrides the configured prompt file, for experiments.
+        tracer: An explicit tracer, mostly for tests. When omitted one is built
+            from ``observability.tracing``, which is off by default and stays off
+            unless it is enabled *and* its SDK and credentials are present.
     """
     settings = config or YamlConfig()
     return QueryPipeline(
@@ -180,6 +212,7 @@ def build_query_pipeline(
             reranker=reranker,
             rerank_config=settings.rerank,
             system_prompt=system_prompt,
+            tracer=tracer if tracer is not None else build_tracer(settings.observability.tracing),
         )
     )
 
@@ -194,11 +227,17 @@ def run_query(
     top_k: int | None = None,
     reranker: Reranker | None = None,
     system_prompt: str | None = None,
+    tracer: Tracer | None = None,
+    request_id: str | None = None,
 ) -> QueryResult:
     """Answer *query* with a freshly compiled pipeline.
 
     The one-shot form of :class:`QueryPipeline`. A long-lived caller should build
     the pipeline once instead — see :func:`build_query_pipeline`.
+
+    ``request_id`` is the caller's correlation id; see
+    :meth:`QueryPipeline.run`. Passing the one the HTTP layer already assigned
+    makes the library's log lines join to the access log for the same request.
     """
     pipeline = build_query_pipeline(
         retriever=retriever,
@@ -206,11 +245,20 @@ def run_query(
         config=config,
         reranker=reranker,
         system_prompt=system_prompt,
+        tracer=tracer,
     )
-    return pipeline.run(query, mode=mode, top_k=top_k)
+    return pipeline.run(query, mode=mode, top_k=top_k, request_id=request_id)
 
 
-def _to_result(state: QueryState) -> QueryResult:
+def _flush(tracer: Tracer) -> None:
+    """Flush a tracer without letting it fail the request it was observing."""
+    try:
+        tracer.flush()
+    except Exception as exc:  # noqa: BLE001 - telemetry never fails a request
+        _log.warning("tracing_flush_failed", error=str(exc))
+
+
+def _to_result(state: QueryState, *, request_id: str = "") -> QueryResult:
     """Project the final graph state onto the caller-facing result."""
     retrieval = state.retrieval_result
     generation = state.generation
@@ -230,4 +278,5 @@ def _to_result(state: QueryState) -> QueryResult:
         invalid_markers=generation.invalid_markers if generation else (),
         uncited_claims=generation.uncited_claims if generation else (),
         timings_ms=dict(state.timings_ms),
+        request_id=request_id,
     )

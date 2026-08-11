@@ -16,7 +16,7 @@ clients into a serialisable object and makes the state untestable in isolation.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import structlog
 
@@ -38,6 +38,7 @@ from production_rag.graph.state import (
     RETRIEVE_NODE,
     QueryState,
 )
+from production_rag.observability.tracer import NullTracer, Tracer
 from production_rag.retrieval.hybrid import Retriever
 from production_rag.retrieval.rerank import Reranker, apply_rerank
 
@@ -60,6 +61,12 @@ class QueryDeps:
     reranker: Reranker | None = None
     rerank_config: RerankConfig | None = None
     system_prompt: str | None = None
+    tracer: Tracer = field(default_factory=NullTracer)
+    """Where node spans go. The default records nothing and costs nothing.
+
+    A dependency like the others, so tracing is chosen once at the edge and no
+    node has to ask whether it is configured.
+    """
 
     @property
     def rerank(self) -> RerankConfig:

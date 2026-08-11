@@ -321,12 +321,71 @@ class GenerationConfig(_Section):
     prompt: PromptConfig = PromptConfig()
 
 
+class LoggingConfig(_Section):
+    """What the structured log is allowed to contain (M5).
+
+    ``log_prompts`` and ``log_retrieved_text`` default to off and are the only
+    two settings here that can leak the corpus. A prompt carries retrieved
+    document text verbatim, so an aggregator with these on holds a copy of the
+    corpus with none of its access controls — and it fails silently, because
+    nothing errors when a log line is too informative. They exist for a local
+    session on a corpus you own, never for a deployment.
+    """
+
+    level: str = "INFO"
+    format: str = "json"
+    log_prompts: bool = False
+    log_retrieved_text: bool = False
+    include_request_id: bool = True
+
+
+class TracingConfig(_Section):
+    """Opt-in trace export (M5).
+
+    Off by default and never required: the library, the API, the CLI and the
+    whole test suite run with nothing here configured. Only env var *names* are
+    stored; the credentials themselves stay in the environment.
+
+    ``sample_rate`` bounds volume, not sensitivity. Enabling this sends prompts
+    and answers to whoever runs ``host_env``, which is a decision about where
+    corpus text may travel rather than a verbosity knob.
+    """
+
+    enabled: bool = False
+    provider: str = "langfuse"
+    public_key_env: str = "LANGFUSE_PUBLIC_KEY"
+    secret_key_env: str = "LANGFUSE_SECRET_KEY"  # noqa: S105 - a variable name, not a secret
+    host_env: str = "LANGFUSE_HOST"
+    sample_rate: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class MetricsConfig(_Section):
+    """Fleet-level metrics (declared, not served).
+
+    Modelled so the block round-trips and so the bucket edges live somewhere
+    typed; nothing exposes ``path`` yet. Per-request latency is already on the
+    result and in the logs, and is a different question from this one.
+    """
+
+    enabled: bool = True
+    path: str = "/metrics"
+    latency_buckets_seconds: tuple[float, ...] = (0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0)
+
+
+class ObservabilityConfig(_Section):
+    """Logging, tracing and metrics (M5)."""
+
+    logging: LoggingConfig = LoggingConfig()
+    tracing: TracingConfig = TracingConfig()
+    metrics: MetricsConfig = MetricsConfig()
+
+
 class YamlConfig(_Section):
     """The whole file, with only the blocks the code consumes typed out.
 
-    Blocks belonging to later milestones (``evals``, ``observability``) are
-    intentionally absent and ignored rather than modelled, so this class
-    describes what the runtime actually reads.
+    Blocks belonging to later milestones (``evals``) are intentionally absent
+    and ignored rather than modelled, so this class describes what the runtime
+    actually reads.
     """
 
     ingest: IngestConfig = IngestConfig()
@@ -334,6 +393,7 @@ class YamlConfig(_Section):
     retrieval: RetrievalConfig = RetrievalConfig()
     rerank: RerankConfig = RerankConfig()
     generation: GenerationConfig = GenerationConfig()
+    observability: ObservabilityConfig = ObservabilityConfig()
 
 
 def load_yaml_config(path: str | Path | None = None) -> YamlConfig:

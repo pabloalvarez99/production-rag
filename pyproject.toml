@@ -84,6 +84,14 @@ rerank = [
 rerank-cohere = [
     "cohere>=5.11",
 ]
+# Trace export. Optional in the strong sense: the library, the API, the CLI and
+# the whole test suite run with none of it installed, and `observability.tracing`
+# is off by default. Installing this changes nothing on its own — enabling it
+# does, and enabling it sends prompts and answers to a third party.
+obs = [
+    "langfuse>=2.53",
+    "opentelemetry-api>=1.28",
+]
 
 [project.scripts]
 # Same entrypoint as `python -m production_rag.ingest`, for anyone who prefers a
@@ -174,7 +182,7 @@ namespace_packages = true
 # Optional reranker backends. They are lazily imported behind a documented
 # extra, so the base environment legitimately does not have them installed and
 # a missing stub here is not a type error.
-module = ["sentence_transformers.*", "cohere.*"]
+module = ["sentence_transformers.*", "cohere.*", "langfuse.*", "opentelemetry.*"]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]
