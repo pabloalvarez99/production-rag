@@ -1,9 +1,11 @@
 # Data Model
 
-How data is shaped across the corpus, the chunk artifacts, and the Qdrant
-collection. Scope: **M2** — both named vectors, dense and sparse, are written by
-the ingest job and read by the retriever. Nothing here is aspirational except
-where a field is explicitly marked as belonging to a later milestone.
+How data is shaped across the corpus, the chunk artifacts, the Qdrant collection,
+and the hits the retrieve command emits. Scope: **M2 + M3** — both named vectors,
+dense and sparse, are written by the ingest job and read by the retriever, and a
+hit can now also carry what the rerank stage did to it. Nothing here is
+aspirational except where a field is explicitly marked as belonging to a later
+milestone.
 
 ## Corpus documents (`data/raw/`)
 
@@ -222,6 +224,75 @@ payload scan.
 
 There is deliberately no separate metadata database: Qdrant payloads cover every
 field the query path will read.
+
+## Retrieval hit — the shape the retrieve command emits
+
+Nothing below is stored: this is the read-side shape, produced per query by
+`production_rag.retrieval.hybrid` and printed as the last line of stdout by the
+retrieve command. It is `RetrievalHit.to_dict()`, field for field.
+
+```jsonc
+{
+  "rank": 2,                       // final position, after rerank if it ran
+  "score": 0.032258,               // fused RRF score (not a similarity)
+  "chunk_id": "9f2c1a7b3d4e5f60:0003",
+  "source_path": "sample/08-bm25-vs-dense.md",
+  "title": "BM25 versus dense embeddings",
+  "heading": "What BM25 actually computes",
+  "heading_path": "BM25 versus dense embeddings > What BM25 actually computes",
+  "point_id": "6f3a1c2e-8b47-5d90-a1f2-0c9d7e4b3a15",
+  "branches": ["dense", "sparse"], // which branches returned it
+  "branch_ranks":  {"dense": 14, "sparse": 1},
+  "branch_scores": {"dense": 0.7412, "sparse": 11.83},
+  "pre_rerank_rank": 27,           // M3, present only when a reranker ran
+  "rerank_score": 0.8713,          // M3, present only when a reranker ran
+  "text": "Three ideas, each doing one job: …"
+}
+```
+
+### The two M3 fields, and why they are optional keys
+
+| Field | Type | Set when | Why it exists |
+|---|---|---|---|
+| `pre_rerank_rank` | int | a reranker ran | the position fusion gave the hit. Without it, "the reranker moved this to the top" and "fusion had it at the top all along" are the same observation, and the stage's contribution is unmeasurable |
+| `rerank_score` | float | a reranker ran | the cross-encoder's score for this `(query, passage)` pair. Provider-specific scale — comparable within one run, never across providers |
+
+Both keys are **absent**, not null, when no reranker ran. An M2-era consumer of
+this JSON therefore keeps parsing M3 output unchanged, and the presence of the
+key is itself the signal that the stage ran on this hit.
+
+`pre_rerank_rank` is set once and never overwritten: it holds the fusion
+position, not the position before the most recent reordering. `rank` is always
+the final position.
+
+`score` remains the **fused RRF score** after reranking — it is not replaced by
+`rerank_score`. The two live on unrelated scales, and overwriting one with the
+other would make the fused score unrecoverable and every historical comparison
+wrong. So after a reranked run, `rank` and `score` can disagree in direction:
+rank 1 need not hold the highest `score`, and that is the visible evidence that
+reranking did something.
+
+### The run-level `rerank` summary
+
+Alongside the hits, the result carries one object describing the stage — present
+on every run, including runs where nothing reranked:
+
+```jsonc
+"rerank": {
+  "applied": false,        // did reranking actually reorder these hits?
+  "reranker": "fake",      // provider name or model id; null when off
+  "candidates": 40,        // how many hits the stage was given
+  "error": null            // the failure text when fail_open swallowed one
+}
+```
+
+`candidates` is the honest answer to "was the right chunk even eligible?" — with
+rerank on, anything outside `input_top_k` is unreachable by construction.
+`applied: false` with a non-null `error` is a fail-open degradation; `applied:
+false` with `reranker: null` is simply a run with reranking off. Reporting the
+distinction is the whole point: a rerank that quietly stopped happening looks
+exactly like a rerank that is not helping. See
+[ADR 0004](adr/0004-rerank-cross-encoder.md).
 
 ## Derived artifacts (`data/processed/`)
 

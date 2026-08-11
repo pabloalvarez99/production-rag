@@ -53,6 +53,12 @@ from production_rag.retrieval.hybrid import (
     RetrievalError,
     Retriever,
 )
+from production_rag.retrieval.rerank import (
+    RERANK_KINDS,
+    RERANK_OFF,
+    RerankError,
+    build_reranker,
+)
 from production_rag.retrieval.sparse import SparseError
 from production_rag.retrieval.store import (
     CollectionMismatchError,
@@ -112,6 +118,18 @@ def build_parser() -> argparse.ArgumentParser:
             "Embedding provider. Default 'fake': deterministic hash vectors, no API key, "
             "no network - dense results are arbitrary, BM25 still works. Must match "
             "the model that built the index."
+        ),
+    )
+    parser.add_argument(
+        "--rerank",
+        choices=RERANK_KINDS,
+        default=RERANK_OFF,
+        help=(
+            "Second-stage reranker. Default 'off', which is the fusion-only pipeline. "
+            "'fake' is a deterministic offline term-overlap double, useful for wiring "
+            "and demos, not a quality claim. 'local' runs a cross-encoder through "
+            "sentence-transformers. 'cohere' needs COHERE_API_KEY in the environment. "
+            "'auto' follows rerank.enabled and rerank.provider in the YAML profile."
         ),
     )
     parser.add_argument(
@@ -197,13 +215,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Missing credential or unknown provider: nothing was attempted.
         return _fail(str(exc), type(exc).__name__, EXIT_USAGE)
 
+    try:
+        # The credential is read from the environment, never from a flag: a key on
+        # a command line ends up in shell history, in `ps` output and in
+        # `docker inspect`.
+        reranker = build_reranker(
+            args.rerank,
+            config=config.rerank,
+            api_key=os.environ.get(config.rerank.api_key_env),
+        )
+    except RerankError as exc:
+        # Unknown provider or a missing key: nothing was attempted.
+        return _fail(str(exc), type(exc).__name__, EXIT_USAGE)
+
     store = resolve_searchable_store(
         config=config, settings=settings, collection=collection, url=url
     )
 
     try:
-        retriever = Retriever.from_config(store=store, embedder=embedder, config=config)
+        retriever = Retriever.from_config(
+            store=store, embedder=embedder, config=config, reranker=reranker
+        )
         result = retriever.retrieve(args.query, mode=args.mode, top_k=args.top_k)
+    except RerankError as exc:
+        # Only reachable with rerank.fail_open false; the run started, and the
+        # failure may be transient.
+        return _fail(str(exc), type(exc).__name__, EXIT_RUNTIME)
     except (RetrievalError, SparseError, CollectionMismatchError) as exc:
         # Bad query, bad mode, or a collection that cannot answer this shape of
         # search. Retrying changes nothing.

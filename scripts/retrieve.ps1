@@ -5,16 +5,22 @@
 .DESCRIPTION
     PowerShell equivalent of `make retrieve-fake` for Windows machines without
     make. It is a thin wrapper: the job itself is
-    `python -m production_rag.retrieval`, owned by the retrieval package, and
+    `python -m production_rag.retrieve`, owned by the retrieval package, and
     every flag below maps to one of its options.
 
     What this does: embeds the question (dense), encodes it as BM25 term weights
     (sparse), queries both named vectors in the target Qdrant collection, fuses
     the two ranked lists with reciprocal rank fusion, and prints the top hits.
 
-    What this does NOT do: rerank (M3), generate an answer, or produce citations
-    (M4). There is no LLM call anywhere in this path. The output is retrieved
-    passages, not an answer.
+    What this does NOT do: rerank, generate an answer, or produce citations (M4).
+    There is no LLM call anywhere in this path. The output is retrieved passages,
+    not an answer.
+
+    This is deliberately the M2 surface: it stops at fusion. The M3 cross-encoder
+    rerank stage has its own wrapper, `scripts\retrieve_rerank.ps1`, which adds
+    -Rerank and -Compare and is where the fail-open and model-download notes
+    live. Keeping them apart means the plain retrieval command documented in M2
+    keeps behaving exactly as documented.
 
     Two execution modes:
 
@@ -88,7 +94,7 @@ try {
     if (-not $Query.Trim()) { throw 'query is empty.' }
 
     $jobArgs = @(
-        '-m', 'production_rag.retrieval',
+        '-m', 'production_rag.retrieve',
         '--config', $ConfigPath,
         '--query', $Query,
         '--mode', $Mode,

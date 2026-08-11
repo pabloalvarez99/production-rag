@@ -449,6 +449,138 @@ mechanics, [evaluation](docs/evaluation.md#status-after-m2) for what is and is
 not measured, [ADR 0001](docs/adr/0001-hybrid-qdrant.md) — now **Accepted** — for
 why hybrid on one collection.
 
+## Rerank (M3)
+
+M3 adds the stage between fusion and everything downstream: a **cross-encoder
+that rescores the fused candidates** and keeps the best few. It is opt-in,
+fail-open, and ships with three providers — one of which is deliberately fake.
+
+**What is live: reranking. What is still not: generation.** No `POST /v1/query`,
+no LLM call, no answer, no citations. Reranking reorders passages; it is the last
+stage of retrieval, not the first stage of an answer. That is M4.
+
+### Why a reranker after RRF
+
+RRF is scale-free by construction — it sums `1/(k + rank)` over the branches that
+returned a document, so cosine similarity and BM25 scores never have to be
+calibrated against each other. That property costs magnitude: a document that is
+overwhelmingly the best match contributes exactly what a merely adequate one at
+the same rank contributes.
+
+Worse, neither branch ever reads the query and the passage *together*. The dense
+branch compares two independently produced vectors; the sparse branch sums
+per-term weights. The predictable result is the failure everyone recognises from
+a first RAG build: the top 12 are all on-topic and the passage that actually
+answers the question is fourth.
+
+A cross-encoder scores the pair in one forward pass, with attention across both
+texts. It is accurate precisely because it cannot be precomputed — which is also
+why it runs over a shortlist instead of being the retriever.
+
+```
+  fused candidates (RRF, recall-oriented)
+        │  40
+        ▼
+  ┌─────────────────────────────────────────┐
+  │ CROSS-ENCODER — score(query, passage)   │   fake | local | cohere
+  │ one forward pass per pair, ties break   │   on error: fusion order,
+  │ on the fusion rank so runs repeat       │   reported, never silent
+  └────────────────┬────────────────────────┘
+        │  6
+        ▼
+  hits[] + pre_rerank_rank + rerank_score
+```
+
+**Retrieval owns recall; rerank owns precision at the top.** The stage never
+queries Qdrant and never introduces a document fusion did not return.
+
+### `input_top_k` (40) > `top_k` (6), on purpose
+
+The reranker is fed more than it keeps. Handing it exactly the number that
+survives makes it a no-op sorter of an already-final list; handing it 40 lets it
+lift a passage buried at rank 30 into position 2 — the case the stage exists for.
+
+Cost is linear in `input_top_k` (40 candidates = 40 forward passes, or 40
+passages on the wire), so it is the price dial. The flip side is a hard ceiling:
+with rerank on, a chunk outside that window is unreachable by construction, which
+is why every result reports how many candidates the stage actually saw.
+
+### fake vs local vs cohere
+
+| `--rerank` | Model | Needs | What it is for |
+|---|---|---|---|
+| `off` *(default)* | — | — | plain M2 behaviour |
+| `fake` | query-term overlap, pure Python | nothing: no key, no download, no network | **plumbing only.** CI, offline laptops, contract tests |
+| `local` | `BAAI/bge-reranker-base` on CPU | `sentence-transformers` + a ~1.1 GB one-time download | real reranking, no per-query spend, no passage leaves the machine |
+| `cohere` | `rerank-english-v3.0` | the `cohere` package + `COHERE_API_KEY` | hosted swap when a deployment cannot host a model |
+| `auto` | from `rerank.provider` | depends | the YAML is the switch for a deployment |
+
+`fake` carries the same warning as the fake embedder, one stage later. It is
+deterministic — so tests can assert an order — and it **models nothing**: it
+scores lexical coverage, a cruder version of what BM25 already did. Under it the
+flag path, the candidate arithmetic, the fail-open branch, the emitted fields and
+the JSON contract are all genuinely exercised. Its *ordering* is not.
+
+Said plainly: **rerank plumbing runs everywhere; rerank quality exists only on
+`local` or `cohere`.** No ordering number produced by `fake` appears anywhere in
+this repository, and none should.
+
+### `fail_open` — degrade the ordering, never the availability
+
+If the reranker errors or times out, the stage logs it and returns **fusion
+order**; the query succeeds. The un-reranked result is correct in kind, only
+ordered worse — availability beats a few points of nDCG.
+
+That is the opposite of how a *missing capability* is treated: a collection with
+no `sparse` vector aborts, because the system would otherwise be silently
+unhybrid. A missing improvement is not a missing capability.
+
+Never silent, either way. Every result carries `rerank: {applied, reranker,
+candidates, error}`, present even when nothing reranked, and a reranked hit adds
+`pre_rerank_rank` and `rerank_score` — so "the cross-encoder pulled this from
+rank 27 to rank 2" is measurable rather than felt. `fail_open: false` exists for
+a deployment that would rather fail the request, and means a provider outage is
+an outage.
+
+### Running it
+
+```bash
+docker compose run --rm api python -m production_rag.retrieve \
+    --query "what is a cross-encoder" --rerank fake     # plumbing, no credentials
+docker compose run --rm api python -m production_rag.retrieve \
+    --query "what is a cross-encoder" --rerank local    # the real thing
+```
+
+```powershell
+.\scripts\retrieve_rerank.ps1 -Query "what is a cross-encoder"
+.\scripts\retrieve_rerank.ps1 -Query "what is a cross-encoder" -Rerank local
+.\scripts\retrieve_rerank.ps1 -Query "what is a cross-encoder" -Rerank local -Compare
+```
+
+`-Compare` runs the query twice — rerank off, then on — because an ordering on
+its own is not evidence and a delta is. `scripts/retrieve.ps1` stays the plain M2
+surface and is unchanged.
+
+### What it is worth, measured honestly
+
+No pre/post number is quoted here. The procedure that produces one is in
+[evaluation.md](docs/evaluation.md#pre--and-post-rerank-hitk): score the golden
+set with the stage off, then on, changing nothing else, and compare `hit@k` at
+`k ≤ rerank.top_k` — comparing above that cut shows a fake regression, because
+the reranked run was only asked for six hits. `hit@k` also under-reports the
+stage: moving the answer from rank 5 to rank 1 changes `hit@1` and nothing else.
+`nDCG` is the metric that sees a reordering, and it needs graded chunk-level
+labels — M6.
+
+On a 14-item set with a `fake` embedder, that comparison measures plumbing twice.
+
+Details: [ADR 0004](docs/adr/0004-rerank-cross-encoder.md) for the decision and
+the alternatives, [runbook](docs/runbook.md#rerank-m3--off-by-default-opt-in-per-run)
+for operations, model download and failure modes,
+[architecture](docs/architecture.md#why-rerank-runs-after-rrf-and-not-instead-of-it)
+for where the stage sits, [data model](docs/data-model.md#the-two-m3-fields-and-why-they-are-optional-keys)
+for the two fields a reranked hit gains.
+
 ## License
 
 [MIT](LICENSE).

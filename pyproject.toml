@@ -66,6 +66,17 @@ rag = [
     "sentence-transformers>=3.3",
     "ragas>=0.2",
 ]
+# The local cross-encoder reranker, and nothing else. Separate from `rag` so a
+# deployment that wants reranking does not also pull LangGraph and ragas — and
+# so the base install stays free of torch, which `--rerank off` never needs.
+rerank = [
+    "sentence-transformers>=3.3",
+]
+# The hosted reranker. Optional by design: a portfolio that cannot be run without
+# someone else's credential is a portfolio nobody runs.
+rerank-cohere = [
+    "cohere>=5.11",
+]
 
 [project.scripts]
 # Same entrypoint as `python -m production_rag.ingest`, for anyone who prefers a
@@ -151,6 +162,13 @@ warn_unused_ignores = true
 mypy_path = "src"
 explicit_package_bases = true
 namespace_packages = true
+
+[[tool.mypy.overrides]]
+# Optional reranker backends. They are lazily imported behind a documented
+# extra, so the base environment legitimately does not have them installed and
+# a missing stub here is not a type error.
+module = ["sentence_transformers.*", "cohere.*"]
+ignore_missing_imports = true
 
 [tool.pydantic-mypy]
 init_forbid_extra = true

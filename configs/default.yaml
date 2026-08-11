@@ -4,19 +4,20 @@
 # key existing here is not a promise that the runtime reads it yet. Each block
 # below carries a `status:` comment; docs/architecture.md holds the same table.
 #
-# Status after M2 (hybrid retrieval):
+# Status after M3 (cross-encoder rerank):
 #   ingest            LIVE
 #   ingest.sparse     LIVE   BM25 vectors are written at ingest time
 #   qdrant            LIVE   (dense + sparse vectors, payload indexes, consistency)
-#   retrieval         LIVE   read by `python -m production_rag.retrieval`
-#   rerank            M3
+#   retrieval         LIVE   read by `python -m production_rag.retrieve`
+#   rerank            LIVE   opt-in; the `fake` provider always runs offline,
+#                            `local`/`cohere` are the ones that mean anything
 #   generation        M4
 #   evals             M6     thresholds declared; only a hit@k script exists
 #   observability     M5     (logging block is live)
 #
-# Hybrid *retrieval* runs. Hybrid *answering* does not: there is no query
-# endpoint, no LLM call, no citation rendering. Retrieval is a batch command
-# that prints ranked hits. See the roadmap in README.md.
+# Hybrid *retrieval* runs, and so does reranking. *Answering* does not: there is
+# no query endpoint, no LLM call, no citation rendering. Retrieval is a batch
+# command that prints ranked passages. See the roadmap in README.md.
 #
 # Precedence (lowest to highest):
 #   1. this file
@@ -113,9 +114,10 @@ ingest:
 
 # ---------------------------------------------------------------------------
 # Retrieval — hybrid dense + sparse, fused with RRF.
-# status: LIVE (M2). Read by `python -m production_rag.retrieval` (make
+# status: LIVE (M2). Read by `python -m production_rag.retrieve` (make
 # retrieve-fake / scripts/retrieve.ps1). No HTTP query endpoint reads it yet —
-# that is M4 — and nothing downstream of fusion exists: no rerank, no answer.
+# that is M4. Downstream of fusion there is now a rerank stage (M3, opt-in, see
+# the `rerank` block); there is still no answer generation.
 # ---------------------------------------------------------------------------
 retrieval:
   # dense  — embedding kNN only; the honest setting when the collection has no
@@ -156,20 +158,73 @@ retrieval:
     allowed_fields: [source, title, tags, created_at]
 
 # ---------------------------------------------------------------------------
-# Rerank — cross-encoder pass over fused candidates.  status: M3 — not wired.
+# Rerank — cross-encoder pass over the fused candidates.
+# status: LIVE (M3), opt-in. Read by `python -m production_rag.retrieve`; the
+# `--rerank` flag switches one run, this block switches a deployment.
+#
+# Why this stage exists: RRF orders by RANK, never magnitude, and neither branch
+# ever reads the query and the passage together — the dense branch compares two
+# separately produced vectors, the sparse branch sums per-term weights. A
+# cross-encoder reads the pair in one forward pass, which is why it is accurate
+# and why it cannot be indexed. Retrieval owns recall; this stage owns precision
+# at the top. It never queries Qdrant and never adds a document fusion did not
+# return. Rationale: docs/adr/0004-rerank-cross-encoder.md.
+#
+# Honest scope: the rerank PLUMBING runs anywhere, including with the `fake`
+# provider on a laptop with no credentials. Rerank QUALITY exists only on
+# `local-cross-encoder` or `cohere`. Same distinction as the fake embedder, one
+# stage later — never quote an ordering number produced by `fake`.
+#
+# Still not here: generation. This stage reorders passages; it is the last stage
+# of retrieval, not the first stage of an answer. That is M4.
 # ---------------------------------------------------------------------------
 rerank:
+  # The default is off, so M2 behaviour is what you get unless you ask for more.
+  # `--rerank auto` is what makes this switch (and `provider` below) authoritative
+  # for a run; `--rerank fake|local|cohere|off` overrides both for one command.
   enabled: false
-  provider: cohere # cohere | local-cross-encoder | none
-  model: rerank-english-v3.0
+  # cohere | local-cross-encoder | fake | none
+  #   local-cross-encoder  the project's default CHOICE: CPU cross-encoder, no
+  #                        per-query spend, no passage leaves the machine. Needs
+  #                        `pip install -e ".[rerank]"` and a ~1.1 GB download on
+  #                        first use — bake it into the image or mount a warm
+  #                        cache, or the first request pays for it.
+  #   cohere               hosted swap for targets that cannot host a model.
+  #                        Needs `.[rerank-cohere]` and COHERE_API_KEY.
+  #   fake                 deterministic query-term overlap. Offline plumbing
+  #                        double, NOT a quality claim.
+  #   none                 same as disabling the stage.
+  provider: cohere
+  model: rerank-english-v3.0 # used by the cohere provider
+  # Env var *name*, never the value.
   api_key_env: COHERE_API_KEY
-  # Feed the reranker more than you keep; it is the stage that can recover a
-  # relevant chunk fusion buried at rank 30.
+  # Weights for the local provider. Named here rather than hard-coded so
+  # swapping the model is a config diff an eval run can be attributed to.
+  local_model: BAAI/bge-reranker-base
+  # Feed the reranker MORE than you keep. This asymmetry is the design: handing
+  # it exactly `top_k` makes it a no-op sorter of an already-final list, while 40
+  # lets it lift a passage fusion buried at rank 30 into position 2. Cost is
+  # linear in this number (40 candidates = 40 forward passes, or 40 passages on
+  # the wire), so it is the stage's price dial. Raising it above what fusion
+  # returned (retrieval.dense_top_k + retrieval.sparse_top_k) buys nothing.
+  # The flip side: with rerank on, a chunk outside this window is unreachable by
+  # construction — which is why the result reports how many candidates it saw.
   input_top_k: 40
+  # Hits kept after reranking.
   top_k: 6
   timeout_seconds: 15
   # If the reranker errors or times out, fall through to fusion order rather
-  # than failing the request. Availability beats a few points of nDCG.
+  # than failing the request. Availability beats a few points of nDCG: the
+  # un-reranked result is correct in kind, only ordered worse.
+  #
+  # Deliberately the opposite of how a MISSING CAPABILITY is treated — a
+  # collection with no `sparse` vector aborts, because the system would otherwise
+  # be silently unhybrid. A missing improvement is not a missing capability.
+  #
+  # Never silent either way: the result carries `rerank: {applied, reranker,
+  # candidates, error}`, and a swallowed failure is logged at warning level.
+  # Set false when you would rather fail the request than serve un-reranked
+  # hits — and accept that a provider outage is then an outage.
   fail_open: true
 
 # ---------------------------------------------------------------------------

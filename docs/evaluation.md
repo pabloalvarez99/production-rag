@@ -4,19 +4,27 @@ A RAG system without offline evaluation is a system where every change is a
 guess. This document defines what is measured, how, and what number blocks a
 merge. The strategy rationale is in [ADR-0003](adr/0003-eval-strategy.md).
 
-## Status after M2
+## Status after M3
 
-M2 landed a retriever, so the first measurement in this repository is now
-possible: **source-level `hit@k`**. Everything else is still design.
+M2 landed a retriever, so the first measurement in this repository became
+possible: **source-level `hit@k`**. M3 landed a rerank stage, which makes the
+first *comparison* possible — the same metric with the stage off and on.
+Everything else is still design.
 
 | Piece | State |
 |---|---|
 | `data/eval/golden.jsonl` | **committed** — 14-item seed set, document-level labels |
 | Retrieval metrics (`hit@k` over source paths) | **runnable** — `scripts/eval_hit.py`, `make eval-hit-fake` |
+| Pre- vs post-rerank `hit@k` on the same set | **runnable by hand** — two runs, one comparison; see [below](#pre--and-post-rerank-hitk) |
 | Retrieval metrics (`recall@k`, `mrr`, `ndcg@k` over chunk ids) | needs chunk-level labels; not written yet |
+| `nDCG`, the metric reranking actually moves | needs graded chunk-level labels; M6 |
 | Ragas / LLM-judge answer metrics | needs generated answers; M4 at the earliest |
 | `production_rag.evals` harness | M6 |
 | Merge gate in CI | M6 |
+
+**No pre/post number is reported in this repository.** The procedure below is
+what produces one; running it needs `--embedder openai` and a real reranker, and
+the result is a 14-item smoke test either way.
 
 `scripts/eval_hit.py` is deliberately a **script, not a harness**: stdlib only,
 one metric, no thresholds, no gate. It exists so M2 can be checked end to end
@@ -44,6 +52,79 @@ README as a quality claim. See [ADR-0003](adr/0003-eval-strategy.md).
 The per-branch breakdown is worth more than the headline at this size. `hit@k`
 on the sparse branch alone, over the `exact_token` slice, is a direct test of the
 thing M2 was built for — and it is meaningful even on a `fake` collection.
+
+## Pre- and post-rerank `hit@k`
+
+Reranking is the first change in this project whose value is a *delta*, not a
+level. "Post-rerank `hit@3` is 0.71" says nothing on its own; "it was 0.57 before
+the stage and 0.71 after, same corpus, same embedder, same run" is a finding.
+
+Run the same golden set twice, changing exactly one thing:
+
+```bash
+# baseline: fusion order (M2 behaviour)
+docker compose run --rm api python scripts/eval_hit.py --embedder openai --rerank off
+
+# with the cross-encoder
+docker compose run --rm api python scripts/eval_hit.py --embedder openai --rerank local
+```
+
+```powershell
+.\scripts\eval_hit.ps1 -Embedder openai                    # baseline
+.\scripts\eval_hit.ps1 -Embedder openai -Rerank local      # reranked
+```
+
+> `--rerank` on the eval script is the **agreed interface** for the ablation, not
+> a claim that it has landed: the flag takes the same values as the retrieve
+> command (`off`, `fake`, `local`, `cohere`, `auto`) and passes straight through
+> to the retriever. Until it exists, run the ablation by toggling
+> `rerank.enabled` / `rerank.provider` in a config profile and passing
+> `--config`, which changes exactly the same thing. Either way the script
+> reports and never gates.
+
+### Where the delta should show up, and where it should not
+
+| Metric | Expected effect of reranking | Why |
+|---|---|---|
+| `hit@1`, `hit@3` | should improve if the stage is worth its latency | rerank moves the right passage up |
+| `hit@10`, `hit@12` | should be **flat** | rerank cannot add a document fusion never returned; at `k` equal to the candidate window it is a permutation of the same set |
+| `hit@k` for `k` > `rerank.top_k` | **not comparable** | the reranked run returns only `rerank.top_k` hits (6 by default), so every `k` above that scores against a shorter list. Compare at `k ≤ 6`, or raise `rerank.top_k` for the run |
+
+That last row is the trap. A naive comparison at `hit@10` shows reranking making
+things *worse*, because the reranked run was asked for six hits. It is an
+artifact of the cut, not a regression.
+
+`hit@k` also under-reports what reranking does. The stage's job is ordering, and
+`hit@k` is a set membership question: moving the answer from rank 5 to rank 1
+changes `hit@1` and nothing else. `nDCG` is the metric that sees the whole
+reordering, and it needs graded chunk-level labels — M6.
+
+### What makes the comparison meaningless
+
+- **`--embedder fake`.** The dense branch is hash noise, so the candidate list
+  the reranker is handed is partly arbitrary. A cross-encoder reordering noise
+  produces a number about nothing.
+- **`--rerank fake`.** It scores by query-term overlap, a cruder version of what
+  BM25 already contributed to fusion. Expect a near-zero delta and read nothing
+  into it either way. Both fakes together measure plumbing twice.
+- **Changing two things.** Embedder, `input_top_k`, `top_k`, chunking — one per
+  run, or the delta has no owner.
+- **Fourteen items.** One item moves `hit@3` by seven points. A delta smaller
+  than that is noise, and no threshold should be built on this set.
+
+The honest report is therefore: *`hit@k` at `k ≤ 6`, on an `openai`-embedded
+collection, with the reranker named, the candidate window stated
+(`input_top_k`), and the item count attached.* Anything less is an adjective.
+
+### The candidate ceiling is measurable too
+
+With rerank on, a chunk outside `input_top_k` is unreachable. Before concluding
+that the reranker ordered badly, check `rerank.candidates` in the output and
+compare against the `--rerank off` run at the same `k`: if the baseline did not
+retrieve it either, the defect is in retrieval and no reranker can fix it. That
+separation — recall failure versus ordering failure — is the same principle the
+[two-tier strategy](#principle-separate-the-two-failure-modes) applies one level
+up.
 
 ## What the seed set is for
 
@@ -223,6 +304,9 @@ runs over the same dataset comparable.
 | Sparse branch collapses | tokenisation or stopwords changed | `ingest.sparse` block |
 | Sparse branch quietly returns nothing | collection predates M2, no `sparse` vector | rebuild: `make reingest-fake` |
 | Exact-token items regress after adding documents | IDF drift since the last full ingest | full re-ingest, then re-measure |
+| `hit@k` drops at high `k` right after enabling rerank | the reranked run returns only `rerank.top_k` hits | compare at `k ≤ rerank.top_k`, or raise it — see [pre/post](#pre--and-post-rerank-hitk) |
+| Reranking changes nothing at any `k` | the reranker never ran, or ran on `fake` | check `rerank.applied` and `rerank.error` in the output; a fail-open degradation reports itself |
+| Post-rerank ordering is worse than the baseline | the right chunk was outside `input_top_k`, or the provider is `fake` | check `rerank.candidates` against the `--rerank off` run at the same `k` |
 | `faithfulness` drops, retrieval flat | prompt or model change | `generation.prompt`, model version |
 | Refusals spike | `score_threshold` raised too far | `retrieval.score_threshold` |
 

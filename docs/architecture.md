@@ -1,19 +1,23 @@
 # Architecture
 
-Status: **M2 (hybrid retrieval) in progress.** Last updated: 2026-08-10.
+Status: **M3 (cross-encoder rerank) in progress.** Last updated: 2026-08-10.
 
 M0 shipped the walking skeleton: package, config, health and readiness probes,
 container stack. M1 added the offline ingest path — walk, chunk, embed (dense),
-upsert into Qdrant. M2 adds **retrieval**: sparse/BM25 vectors written alongside
+upsert into Qdrant. M2 added **retrieval**: sparse/BM25 vectors written alongside
 the dense ones at ingest time, a dense branch and a sparse branch queried
-together, and reciprocal rank fusion over the two result lists.
+together, and reciprocal rank fusion over the two result lists. M3 adds
+**reranking**: a cross-encoder pass over the fused candidates that reorders them
+before anything downstream sees them, opt-in, fail-open, with a deterministic
+offline provider so the stage stays runnable with no credentials.
 
-What M2 does **not** add: generation. There is no `POST /v1/query`, no LLM call,
-no answer, no citation rendering. Retrieval is exercised as a batch command that
-prints ranked hits; the HTTP query surface and the generation stages below are
-still design. No retrieval quality number quoted anywhere in this repo has been
-measured against a semantically meaningful embedding — see
-[the fake embedder](#two-embedders-one-path).
+What M3 does **not** add: generation. There is no `POST /v1/query`, no LLM call,
+no answer, no citation rendering. Retrieval — now with rerank — is exercised as a
+batch command that prints ranked hits; the HTTP query surface and the generation
+stages below are still design. No retrieval quality number quoted anywhere in
+this repo has been measured against a semantically meaningful embedding — see
+[the fake embedder](#two-embedders-one-path) and, for the same caveat one stage
+later, [the fake reranker](#three-rerank-providers-one-interface).
 
 ## Overview
 
@@ -44,6 +48,7 @@ footprint stays at two containers.
 | `api` container | FastAPI app, `production_rag.main:app`. Serves `/health`, `/v1/*`. | A1 (code), A2 (image/compose) |
 | `production_rag.ingest` | Offline ingest job: walk, chunk, embed, upsert. New in M1; writes sparse vectors too from M2. | A1 |
 | `production_rag.retrieval` | Embedders, Qdrant store, and — new in M2 — the sparse encoder, the hybrid searcher and RRF fusion. | A1 |
+| `production_rag.rerank` | New in M3: the cross-encoder rerank stage and its three providers (`fake`, `local`, `cohere`), plus the fail-open wrapper. | A1 |
 | `qdrant` container | Dense and sparse vectors plus chunk payloads in one collection. Pinned to `qdrant/qdrant:v1.13.2`. | A2 |
 | `configs/default.yaml` | Declarative runtime config: ingest, retrieval, rerank, generation, qdrant, evals, observability. | A2 |
 | `data/` | `raw/` (corpus), `processed/` (derived chunk artifacts, gitignored), `eval/` (golden set). | A2 |
@@ -54,8 +59,8 @@ Owners were `K1`/`K2` through M0; the same two seats are `A1`/`A2` from M1.
 
 ## Request flow (query path) — partly implemented
 
-> Stages 1–3 (normalise, dense + sparse retrieval, RRF fusion) run as of M2, but
-> as a **batch command**, not as an HTTP endpoint. Stages 4–6 (rerank, generate,
+> Stages 1–4 (normalise, dense + sparse retrieval, RRF fusion, rerank) run as of
+> M3, but as a **batch command**, not as an HTTP endpoint. Stages 5–6 (generate,
 > cite) and the `POST /v1/query` surface itself are unbuilt. Treat every stage
 > below as design until the roadmap in the README marks its milestone done.
 
@@ -63,7 +68,8 @@ Owners were `K1`/`K2` through M0; the same two seats are `A1`/`A2` from M1.
 2. The query is embedded (dense) and tokenized (sparse, BM25-style). *(live, M2)*
 3. Hybrid retrieval runs against Qdrant: dense vector search fused with
    sparse vector search (see [ADR 0001](adr/0001-hybrid-qdrant.md)). *(live, M2)*
-4. Retrieved chunks are optionally reranked (declared in config; not live). *(M3)*
+4. Fused candidates are optionally reranked by a cross-encoder, fail-open (see
+   [ADR 0004](adr/0004-rerank-cross-encoder.md)). *(live, M3 — opt-in)*
 5. A generation call answers with citations to the retrieved chunks. *(M4)*
 6. The query pipeline is orchestrated as a LangGraph graph so steps are
    observable and individually testable (see [ADR 0002](adr/0002-langgraph-query.md)). *(M4)*
@@ -98,9 +104,9 @@ Owners were `K1`/`K2` through M0; the same two seats are `A1`/`A2` from M1.
         └──────────────┬───────────────┘
                        ▼
         ┌──────────────────────────────┐
-        │ 4. RERANK — cross-encoder    │  disabled in M0; fail-open, so a
-        │    40 in → 6 out             │  reranker error degrades to fusion
-        └──────────────┬───────────────┘  order instead of failing the call
+        │ 4. RERANK — cross-encoder    │  opt-in; fail-open, so a reranker
+        │    40 in → 6 out             │  error degrades to fusion order
+        └──────────────┬───────────────┘  instead of failing the call
                        ▼
         ┌──────────────────────────────┐
         │ 5. GENERATE                  │  6k-token context budget,
@@ -138,12 +144,15 @@ BM25 scores live on incomparable scales. See
 | Embedding provider 429 | bounded retry with backoff, then 503 | a silent empty result set is indistinguishable from "no matches" |
 | No chunk clears the threshold | explicit refusal | an unsupported answer is worse than no answer |
 
-## Retrieval flow (M2) — live
+## Retrieval flow (M2 + M3) — live
 
 This is the part of the query path that exists today. It is invoked as a batch
-command (`python -m production_rag.retrieval`, wrapped by `make retrieve-fake`
+command (`python -m production_rag.retrieve`, wrapped by `make retrieve-fake`
 and `scripts/retrieve.ps1`), takes a question string, and prints ranked hits.
 Nothing HTTP-facing calls it yet.
+
+Stages 0–3 are M2 and always run. Stage 4, rerank, is M3 and runs only when it
+is switched on (`rerank.enabled`, or `--rerank` on the command).
 
 ```
   question text
@@ -181,11 +190,27 @@ Nothing HTTP-facing calls it yet.
                            ▼
             ┌──────────────────────────────────────┐
             │ 3. CUT — score_threshold, then       │
-            │    top_k = 12                        │
+            │    top_k = 12  (input_top_k = 40     │
+            │    when rerank is on)                │
             └──────────────┬───────────────────────┘
-                           ▼
-   hits[]: { score, chunk_id, source_path, title, heading_path, text,
-             ranks: {dense: 14, sparse: 1}, contributions: {…} }
+                           │
+              rerank off ──┴── rerank on (M3, opt-in)
+                    │                │
+                    │                ▼
+                    │  ┌──────────────────────────────────────┐
+                    │  │ 4. RERANK — cross-encoder scores     │
+                    │  │    each (query, passage) pair with   │
+                    │  │    full attention across both.       │
+                    │  │    40 candidates in -> 6 kept.       │
+                    │  │    fake | local | cohere.            │
+                    │  │    On error: fusion order, reported. │
+                    │  └──────────────┬───────────────────────┘
+                    └────────┬────────┘
+                             ▼
+   hits[]: { rank, score, chunk_id, source_path, title, heading_path, text,
+             branch_ranks: {dense: 14, sparse: 1}, branch_scores: {…},
+             pre_rerank_rank: 4, rerank_score: 0.87 }   ← last two only when
+                                                          rerank ran
 ```
 
 Each fused hit carries `ranks` — the rank it held in every branch that returned
@@ -225,6 +250,98 @@ document is. With two branches and `k = 60`, the theoretical maximum is
 Default is `0.0` (disabled) for that reason. Raising it filters by "found by both
 branches, high up" rather than by relevance, which is a coarser thing than it
 looks. Raise it only with eval evidence, and expect refusals to spike first.
+
+### Why rerank runs after RRF and not instead of it
+
+RRF orders by rank position, so it never has to calibrate cosine against BM25 —
+and never sees magnitude. Both branches also score a passage *without ever
+reading it next to the query*: the dense branch compares two independently
+produced vectors, the sparse branch sums per-term weights. The predictable result
+is a top-12 that is uniformly on-topic with the actual answer at position four.
+
+A cross-encoder closes exactly that gap: one model, one forward pass per
+`(query, passage)` pair, attention across both texts at once. It is accurate
+precisely because it cannot be precomputed — there is no passage vector to index,
+the query has to be present — which is why it is a reranking stage over a short
+list rather than a retriever.
+
+So the two stages own different metrics. **Retrieval owns recall** (is the
+supporting chunk in the candidate list at all?); **rerank owns precision at the
+top** (is it first?). Rerank cannot fix a recall failure: it never queries
+Qdrant and never introduces a document fusion did not return.
+
+### `input_top_k` (40) is larger than `top_k` (6) on purpose
+
+The reranker is fed more candidates than it keeps. Handing it exactly the number
+that survives makes it a no-op sorter of an already-final list; handing it 40 is
+what lets it lift a passage fusion buried at rank 30 into position 2 — the case
+the stage was added for.
+
+Cost is linear in `input_top_k`: 40 candidates is 40 forward passes locally, or
+40 passages on the wire for a hosted provider. It is the stage's price dial.
+Raising it above what fusion returned (`dense_top_k + sparse_top_k`) buys
+nothing — fusion can only pass on what the branches produced.
+
+The flip side is a hard ceiling: with rerank on, a relevant chunk outside
+`input_top_k` is unreachable by construction. The reported counts therefore
+include how many candidates the stage actually saw, so "was it even a candidate?"
+is answerable before "was the ranking wrong?".
+
+### Three rerank providers, one interface
+
+| `--rerank` | `rerank.provider` | Model | Needs | What it measures |
+|---|---|---|---|---|
+| `fake` | `fake` | none — query-term overlap, pure Python | nothing: no key, no download, no network | **nothing.** Plumbing only |
+| `local` | `local-cross-encoder` | `BAAI/bge-reranker-base` | `sentence-transformers` (ships in the `rag` extra), ~1.1 GB model download, CPU | real relevance, no per-query spend, corpus stays local |
+| `cohere` | `cohere` | `rerank-english-v3.0` | the `cohere` package, `COHERE_API_KEY`, HTTPS per query | real relevance, hosted, billed per search |
+
+Both real providers import lazily, so `--rerank off` and `--rerank fake` never
+pay for torch or a Cohere client. A missing package fails with a message naming
+what to install, not an `ImportError` from three frames down.
+
+`--rerank` also takes `off` (default: M2 behaviour) and `auto` (read
+`rerank.enabled` and `rerank.provider` from the YAML). The flag switches one run;
+`auto` plus the config file switches a deployment.
+
+`fake` is the rerank stage's counterpart to the fake embedder, with the same
+warning attached. It scores a candidate by the share of distinct query terms its
+text contains — deterministic, so tests can assert on it — which is a cruder
+version of what BM25 already did one stage earlier. The flag path, the candidate
+arithmetic, the `fail_open` branch, the emitted hit fields and the JSON contract
+are all genuinely exercised under it. Its *ordering* is not a quality signal and
+no number measured with it is reported as one.
+
+Stated plainly: **rerank plumbing is live everywhere; rerank quality is live only
+on `local` or `cohere`.**
+
+`local` is the project's default choice — a CPU cross-encoder makes reranking a
+fixed infrastructure cost instead of a per-query bill, and no passage leaves the
+machine. `cohere` is a supported swap for deployments that cannot host a model:
+same interface, different latency and cost profile. See
+[ADR 0004](adr/0004-rerank-cross-encoder.md).
+
+### `fail_open` — the reranker degrades ordering, never availability
+
+If the reranker raises, times out, or returns something malformed, the stage logs
+it and returns **fusion order**, unchanged; the query succeeds. Availability beats
+a few points of nDCG, because the un-reranked result is still correct in kind —
+it is merely ordered worse.
+
+That is deliberately the opposite of how a *missing capability* is treated: a
+collection with no `sparse` named vector aborts, because the system would
+otherwise be silently unhybrid. A missing improvement is not a missing capability.
+
+The degradation is never silent. Every result carries a `rerank` object —
+`{applied, reranker, candidates, error}` — present even when nothing reranked,
+and a failure is logged at warning level. So "ordering got worse last Tuesday" is
+answerable from the response and the logs instead of from a bisect. A reranked
+hit additionally carries `pre_rerank_rank` and `rerank_score`, which is what
+makes "the cross-encoder pulled this from rank 27 to rank 2" a measurable
+statement rather than an impression.
+
+`fail_open: false` exists for a deployment that would
+rather fail the request than serve un-reranked hits; choosing it means accepting
+that a provider outage is an outage.
 
 ### Migration: M2 needs a collection rebuild
 
@@ -346,18 +463,18 @@ only stage in the system that spends money per document, which is why the
 content hash and the incremental skip exist before the embed call rather than
 after it.
 
-## What is live in M2 vs declared-only
+## What is live in M3 vs declared-only
 
 `configs/default.yaml` is deliberately broader than what the code consumes.
 
-| Config block | State after M2 |
+| Config block | State after M3 |
 |---|---|
 | `ingest` (walk, chunking, embedding, incremental) | live |
 | `ingest.sparse` (BM25 k1/b, lowercase, stopwords) | **live** — vectors are written at ingest |
 | `qdrant` (collection, dense + sparse vectors, payload indexes, write consistency) | live |
 | `retrieval` (mode, top-k per branch, RRF, threshold, payload fields) | **live** — read by the retrieve command |
 | `retrieval.filters.allowed_fields` | declared only — the filter allowlist belongs to the HTTP surface (M4) |
-| `rerank` | declared only — M3 |
+| `rerank` (enabled, provider, input_top_k, top_k, timeout, fail_open) | **live** — read by the retrieve command. Ordering quality is real only on `local` / `cohere`; the `fake` provider exercises the stage, not relevance |
 | `generation`, `citations` | declared only — M4 |
 | `evals` | thresholds declared; a source-level `hit@k` script exists, the Ragas harness does not — M6 |
 | `observability.tracing` | declared only — M5 |
@@ -375,7 +492,7 @@ A key existing in that file is not a claim that the runtime reads it.
 | Qdrant unreachable at upsert | abort non-zero, nothing partially written | ingest is restartable; the content hash makes the retry cheap |
 | Collection exists with a different vector size | abort with an explicit message | silently writing 1536-dim vectors into a 768-dim collection fails much later and much less legibly |
 
-### Retrieval failure behaviour (M2)
+### Retrieval failure behaviour (M2 + M3)
 
 | Failure | Behaviour | Rationale |
 |---|---|---|
@@ -384,25 +501,37 @@ A key existing in that file is not a claim that the runtime reads it.
 | Embedding provider 429 on the query embed | bounded retry with backoff, then fail the query | an empty result set is indistinguishable from "no matches" |
 | Sparse branch returns nothing (all query terms out of vocabulary) | dense results are returned, and the empty branch is reported | legitimate: an all-stopword query has no lexical signal |
 | No hit clears `score_threshold` | empty result set, reported as such | with the default `0.0` this cannot happen; it is a config decision, not a fault |
+| Reranker errors, times out, or returns a malformed response | fusion order is returned and the degradation is reported (`fail_open: true`, default) | the un-reranked result is correct in kind, only ordered worse; availability beats a few points of nDCG |
+| Same, with `fail_open: false` | the query fails | a deployment that would rather 5xx than serve un-reranked hits; a provider outage becomes an outage |
+| `local` reranker requested but the extra is not installed, or `cohere` without `COHERE_API_KEY` | abort, exit 2, before any query runs | a missing provider is a bad invocation, not a runtime fault — and silently falling back to `fake` would fabricate a quality claim |
 
-The asymmetry is deliberate. A *missing capability* (no sparse vector on the
-collection) aborts; an *empty result from a working capability* is data.
+The asymmetry is deliberate, twice over. A *missing capability* (no sparse vector
+on the collection, or a reranker that was never installed) aborts; an *empty
+result from a working capability* is data; a *failed improvement* over a result
+that already exists degrades and says so.
 
 ## Deployment shape
 
-Local development is the only target through M2 and it is `docker compose up -d
+Local development is the only target through M3 and it is `docker compose up -d
 --build`. The compose file is written to be promotion-friendly: pinned image
 tags, healthchecks on both services, named volume for the vector index, and
 secrets injected exclusively via environment (never files baked into images).
 
-## Non-goals (M2)
+One M3 note for any non-local target: the `local` reranker needs its model
+weights (~1.1 GB) present before the first query. Bake them into the image or
+mount a warm cache — a cold container that downloads a cross-encoder on its first
+request is a latency incident, not a cold start. See the
+[runbook](runbook.md#the-local-reranker-downloads-a-model).
+
+## Non-goals (M3)
 
 - No query **endpoint**. Retrieval runs as a batch command; `POST /v1/query` is M4.
-- No reranking (M3) and no generation, answers or citations (M4).
-- No measured retrieval quality number. The `hit@k` script reports what the
-  current corpus and embedder produce; on the `fake` embedder that number is
-  plumbing, not quality.
+- No generation, answers or citations (M4). Rerank reorders passages; it is the
+  last stage of retrieval, not the first stage of generation.
+- No measured retrieval quality number, before or after rerank. The `hit@k`
+  script reports what the current corpus, embedder and reranker produce; on the
+  `fake` embedder and the `fake` reranker that number is plumbing, not quality.
 - No authentication/authorization on the API.
 - No horizontal scaling, no API gateway.
-- No GPU-bound local models in the runtime path.
-- Reranker and full observability stack are config-shaped but not wired.
+- No GPU in the runtime path. The `local` cross-encoder is CPU-only by design.
+- Full observability stack is config-shaped but not wired.

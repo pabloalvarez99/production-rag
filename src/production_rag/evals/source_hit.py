@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -53,6 +54,12 @@ from production_rag.ingest.hashing import normalise_source_path
 from production_rag.retrieval.cli import resolve_searchable_store
 from production_rag.retrieval.embeddings import EmbeddingError
 from production_rag.retrieval.hybrid import RETRIEVAL_MODES, RetrievalError, Retriever
+from production_rag.retrieval.rerank import (
+    RERANK_KINDS,
+    RERANK_OFF,
+    RerankError,
+    build_reranker,
+)
 from production_rag.retrieval.sparse import SparseError
 from production_rag.retrieval.store import CollectionMismatchError, VectorStoreError
 
@@ -381,6 +388,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--rerank",
+        choices=RERANK_KINDS,
+        default=RERANK_OFF,
+        help=(
+            "Rerank the fused candidates before scoring. Default 'off', so this "
+            "number stays comparable with the M2 baseline. Run it twice, once per "
+            "setting, and the difference is the reranker's contribution."
+        ),
+    )
+    parser.add_argument(
         "--collection",
         help="Collection to query. Defaults to QDRANT_COLLECTION, else qdrant.collection.",
     )
@@ -430,6 +447,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     except EmbeddingError as exc:
         return _fail(str(exc), type(exc).__name__, EXIT_USAGE)
 
+    try:
+        # Credential from the environment only, as everywhere else in this repo.
+        reranker = build_reranker(
+            args.rerank,
+            config=config.rerank,
+            api_key=os.environ.get(config.rerank.api_key_env),
+        )
+    except RerankError as exc:
+        return _fail(str(exc), type(exc).__name__, EXIT_USAGE)
+
     store = resolve_searchable_store(
         config=config,
         settings=settings,
@@ -438,15 +465,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     try:
-        retriever = Retriever.from_config(store=store, embedder=embedder, config=config)
+        retriever = Retriever.from_config(
+            store=store, embedder=embedder, config=config, reranker=reranker
+        )
         report = evaluate_source_hit(retriever=retriever, cases=cases, k=args.k, mode=args.mode)
     except (EvalError, RetrievalError, SparseError, CollectionMismatchError) as exc:
         return _fail(str(exc), type(exc).__name__, EXIT_USAGE)
-    except (EmbeddingError, VectorStoreError) as exc:
+    except (EmbeddingError, RerankError, VectorStoreError) as exc:
         return _fail(str(exc), type(exc).__name__, EXIT_RUNTIME)
 
     summary = report.to_summary()
     summary["golden_path"] = args.golden
+    # Recorded next to the score: a hit@k without its rerank setting is not a
+    # reproducible number.
+    summary["rerank"] = args.rerank
     _emit(summary)
     return EXIT_OK
 

@@ -27,8 +27,9 @@ from typing import Any
 
 import structlog
 
-from production_rag.config_loader import RetrievalConfig, YamlConfig
+from production_rag.config_loader import RerankConfig, RetrievalConfig, YamlConfig
 from production_rag.retrieval.embeddings import EmbeddingProvider
+from production_rag.retrieval.rerank import Reranker, RerankOutcome, apply_rerank
 from production_rag.retrieval.rrf import rank_keys, reciprocal_rank_fusion
 from production_rag.retrieval.sparse import SparseEncoder, build_sparse_encoder
 from production_rag.retrieval.store import SearchableVectorStore, SearchHit
@@ -44,6 +45,16 @@ MODE_HYBRID = "hybrid"
 RETRIEVAL_MODES = (MODE_DENSE, MODE_SPARSE, MODE_HYBRID)
 """The modes a caller may ask for. ``hybrid`` is the default; the other two exist
 so a single-branch baseline is measurable."""
+
+NO_RERANK_SUMMARY: dict[str, Any] = {
+    "applied": False,
+    "reranker": None,
+    "candidates": 0,
+    "error": None,
+}
+"""Summary emitted when no reranker was configured. Present rather than omitted:
+an eval row that lacks the key is indistinguishable from one written before the
+key existed."""
 
 
 class RetrievalError(RuntimeError):
@@ -72,10 +83,19 @@ class RetrievalHit:
     branches: tuple[str, ...] = ()
     branch_ranks: dict[str, int] = field(default_factory=dict)
     branch_scores: dict[str, float] = field(default_factory=dict)
+    # Set only when a reranker ran (M3). Keeping the fusion position instead of
+    # overwriting ``rank`` is what makes "the cross-encoder pulled this from 27 to
+    # 2" a statement the response itself can support.
+    rerank_score: float | None = None
+    pre_rerank_rank: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """JSON-serialisable form, as printed by the retrieve CLI."""
-        return {
+        """JSON-serialisable form, as printed by the retrieve CLI.
+
+        The rerank keys appear only when a reranker actually ran, so a M2-era
+        consumer of this payload sees exactly the M2 shape.
+        """
+        payload: dict[str, Any] = {
             "rank": self.rank,
             "score": round(self.score, 6),
             "chunk_id": self.chunk_id,
@@ -91,6 +111,11 @@ class RetrievalHit:
             },
             "text": self.text,
         }
+        if self.rerank_score is not None:
+            payload["rerank_score"] = round(self.rerank_score, 6)
+        if self.pre_rerank_rank is not None:
+            payload["pre_rerank_rank"] = self.pre_rerank_rank
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +139,11 @@ class RetrievalResult:
     weights: dict[str, float] = field(default_factory=dict)
     score_threshold: float = 0.0
     dropped_below_threshold: int = 0
+    # What the rerank stage did. Reported even when nothing reranked, because "was
+    # this ranking reranked?" must be answerable from the response a caller already
+    # has — a rerank that quietly stopped happening looks exactly like a rerank
+    # that is not helping.
+    rerank: RerankOutcome | None = None
 
     def to_summary(self) -> dict[str, Any]:
         """Machine-readable summary, the CLI's last line of stdout."""
@@ -131,6 +161,7 @@ class RetrievalResult:
             "weights": dict(self.weights),
             "score_threshold": self.score_threshold,
             "dropped_below_threshold": self.dropped_below_threshold,
+            "rerank": self.rerank.as_dict() if self.rerank else NO_RERANK_SUMMARY,
             "hits": [hit.to_dict() for hit in self.hits],
         }
 
@@ -145,6 +176,8 @@ class Retriever:
         embedder: EmbeddingProvider,
         config: RetrievalConfig | None = None,
         sparse_encoder: SparseEncoder | None = None,
+        reranker: Reranker | None = None,
+        rerank_config: RerankConfig | None = None,
     ) -> None:
         """Wire the retriever to a store and an embedder.
 
@@ -156,11 +189,17 @@ class Retriever:
             config: Retrieval knobs; the documented defaults when omitted.
             sparse_encoder: Query-side encoder. Defaults to BM25 with the default
                 tokenizer. Needs no fitted statistics, by design.
+            reranker: Second-stage scorer applied after fusion. ``None`` — the
+                default — is exactly the M2 pipeline, so adding this parameter
+                changes no existing behaviour.
+            rerank_config: Depth and failure policy for that stage.
         """
         self._store = store
         self._embedder = embedder
         self._config = config or RetrievalConfig()
         self._sparse = sparse_encoder or build_sparse_encoder()
+        self._reranker = reranker
+        self._rerank_config = rerank_config or RerankConfig()
 
     @classmethod
     def from_config(
@@ -169,18 +208,25 @@ class Retriever:
         store: SearchableVectorStore,
         embedder: EmbeddingProvider,
         config: YamlConfig,
+        reranker: Reranker | None = None,
     ) -> Retriever:
         """Build a retriever from a whole YAML profile.
 
         The query-side tokenizer is taken from ``ingest.sparse``, not from a
         retrieval block: a query tokenised differently from the corpus is the
         classic lexical-search bug, so there is one setting and both sides read it.
+
+        The reranker is passed in rather than built here, because constructing one
+        may need a credential from the environment, and this class should not be
+        the place that reads secrets.
         """
         sparse_config = config.ingest.sparse
         return cls(
             store=store,
             embedder=embedder,
             config=config.retrieval,
+            reranker=reranker,
+            rerank_config=config.rerank,
             sparse_encoder=build_sparse_encoder(
                 method=sparse_config.method,
                 k1=sparse_config.k1,
@@ -230,6 +276,7 @@ class Retriever:
             RetrievalError: Empty query, unknown mode, or non-positive *top_k*.
             EmbeddingError: The embedding provider failed.
             VectorStoreError: The store could not be queried.
+            RerankError: Reranking failed and ``rerank.fail_open`` is false.
         """
         text = query.strip()
         if not text:
@@ -244,6 +291,11 @@ class Retriever:
         limit = self._config.top_k if top_k is None else top_k
         if limit <= 0:
             raise RetrievalError(f"top_k must be positive, got {limit}")
+
+        # With a reranker in the pipeline, fusion is no longer the last word, so it
+        # hands over a deeper shortlist: the reranker can only recover a relevant
+        # chunk it was actually shown. Never fewer than the caller asked for.
+        fuse_limit = max(limit, self._rerank_config.input_top_k) if self._reranker else limit
 
         fields = list(self._config.return_payload_fields)
         dense_hits: list[SearchHit] = []
@@ -268,12 +320,19 @@ class Retriever:
                     sparse_query, limit=self._config.sparse_top_k, with_payload=fields
                 )
 
-        fused, dropped = self._fuse(dense_hits, sparse_hits, mode=resolved_mode, limit=limit)
+        fused, dropped = self._fuse(dense_hits, sparse_hits, mode=resolved_mode, limit=fuse_limit)
+        outcome = apply_rerank(
+            self._reranker,
+            text,
+            fused,
+            top_n=limit,
+            fail_open=self._rerank_config.fail_open,
+        )
         fusion = self._config.fusion
         result = RetrievalResult(
             query=text,
             mode=resolved_mode,
-            hits=fused,
+            hits=outcome.hits,
             collection=self._store.collection,
             embedded_model=self._embedder.model,
             dense_candidates=len(dense_hits),
@@ -283,11 +342,14 @@ class Retriever:
             weights=self._weights(resolved_mode),
             score_threshold=self._config.score_threshold,
             dropped_below_threshold=dropped,
+            rerank=outcome if self._reranker else None,
         )
         _log.info(
             "retrieval_completed",
             mode=resolved_mode,
-            returned=len(fused),
+            returned=len(outcome.hits),
+            reranker=outcome.reranker,
+            rerank_applied=outcome.applied,
             dense_candidates=len(dense_hits),
             sparse_candidates=len(sparse_hits),
             dropped_below_threshold=dropped,

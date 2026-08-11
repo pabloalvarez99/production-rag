@@ -245,10 +245,36 @@ class RetrievalConfig(_Section):
     filters: FiltersConfig = FiltersConfig()
 
 
+class RerankConfig(_Section):
+    """Second-stage scoring applied after fusion (M3).
+
+    ``input_top_k`` is larger than ``top_k`` on purpose: reranking is the stage
+    that can recover a relevant chunk fusion buried at rank 30, and it can only
+    recover what it is shown.
+
+    ``fail_open`` decides what a reranker failure means. ``True`` degrades to the
+    fusion order, because a slightly worse ranking beats no answer; a deployment
+    that would rather fail loudly sets it to ``False``.
+    """
+
+    enabled: bool = False
+    provider: str = "cohere"
+    model: str = "rerank-english-v3.0"
+    api_key_env: str = "COHERE_API_KEY"
+    input_top_k: int = Field(default=40, gt=0)
+    top_k: int = Field(default=6, gt=0)
+    timeout_seconds: float = Field(default=15.0, gt=0)
+    fail_open: bool = True
+    # Local cross-encoder weights, used when the provider is the local one. Named
+    # here rather than hard-coded so swapping the model is a config diff an eval
+    # run can be attributed to.
+    local_model: str = "BAAI/bge-reranker-base"
+
+
 class YamlConfig(_Section):
     """The whole file, with only the blocks the code consumes typed out.
 
-    Blocks belonging to later milestones (``rerank``, ``generation``, ``evals``,
+    Blocks belonging to later milestones (``generation``, ``evals``,
     ``observability``) are intentionally absent and ignored rather than modelled,
     so this class describes what the runtime actually reads.
     """
@@ -256,6 +282,7 @@ class YamlConfig(_Section):
     ingest: IngestConfig = IngestConfig()
     qdrant: QdrantConfig = QdrantConfig()
     retrieval: RetrievalConfig = RetrievalConfig()
+    rerank: RerankConfig = RerankConfig()
 
 
 def load_yaml_config(path: str | Path | None = None) -> YamlConfig:

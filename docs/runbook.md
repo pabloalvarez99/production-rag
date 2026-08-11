@@ -206,24 +206,21 @@ The job wrote to a different collection than the one the probe checks. Compare
 `QDRANT_COLLECTION` in the container against the `-Collection` argument on the
 probe.
 
-## Retrieve (M2)
+## Retrieve (M2 + M3)
 
 Retrieval is a batch command, like ingest. It takes a question, queries the
 dense and sparse branches against the collection, fuses the two ranked lists
-with RRF, and prints the hits.
+with RRF, optionally reranks them with a cross-encoder (M3, off by default), and
+prints the hits.
 
 **It returns passages, not an answer.** There is no LLM call anywhere in this
-path, no reranking (M3) and no citation rendering (M4). If you are looking for
-`POST /v1/query`, it does not exist yet.
+path and no citation rendering (M4). If you are looking for `POST /v1/query`, it
+does not exist yet. Reranking reorders passages; it does not answer.
 
-> The retrieval **primitives** are in place — BM25 encoding, both search paths on
-> the store, RRF fusion, all unit-tested offline. The command below is the agreed
-> operator surface over them: `python -m production_rag.retrieval`, flags mapping
-> one-to-one onto the config keys, logs on stderr and a JSON object as the last
-> line of stdout, exit `0` ok / `1` the run failed / `2` the invocation or the
-> collection is wrong — the same contract as the ingest job. Until that entry
-> point lands, these commands fail with a module-not-found error, which is the
-> correct outcome and not a stack problem.
+The job is `python -m production_rag.retrieve`: flags map one-to-one onto the
+config keys, logs go to stderr, a single JSON object is the last line of stdout,
+and exit codes are graded `0` ok / `1` the run failed / `2` the invocation or the
+collection is wrong — the same contract as the ingest job.
 
 ```bash
 make retrieve-fake QUERY="how does reciprocal rank fusion work"
@@ -267,6 +264,125 @@ by `sparse` and not by `dense` is a document the embedding branch never returned
 — hybrid retrieval doing the job it was adopted for, visible per hit rather than
 inferred.
 
+### Rerank (M3) — off by default, opt in per run
+
+```bash
+make retrieve-fake QUERY="how does reciprocal rank fusion work"                  # M2 behaviour
+docker compose run --rm api python -m production_rag.retrieve \
+    --query "how does reciprocal rank fusion work" --rerank fake                 # plumbing
+docker compose run --rm api python -m production_rag.retrieve \
+    --query "how does reciprocal rank fusion work" --rerank local                # real
+```
+
+```powershell
+.\scripts\retrieve_rerank.ps1 -Query "how does reciprocal rank fusion work"
+.\scripts\retrieve_rerank.ps1 -Query "how does reciprocal rank fusion work" -Rerank local
+.\scripts\retrieve_rerank.ps1 -Query "…" -Rerank local -Compare   # side by side with rerank off
+```
+
+| `--rerank` | What it does | Needs |
+|---|---|---|
+| `off` (default) | nothing; fusion order, exactly M2 | — |
+| `fake` | deterministic query-term overlap | nothing — no key, no download, no network |
+| `local` | `BAAI/bge-reranker-base` cross-encoder on CPU | `sentence-transformers`, plus a one-time ~1.1 GB model download |
+| `cohere` | hosted `rerank-english-v3.0` | the `cohere` package and `COHERE_API_KEY` |
+| `auto` | whatever `rerank.enabled` / `rerank.provider` say in the YAML | depends on the provider it resolves to |
+
+**`fake` is plumbing, not quality.** It re-scores by the share of query terms a
+passage contains, which is a cruder version of what BM25 already did — so it
+mostly reproduces the fusion order and will never do what a cross-encoder does.
+Use it to prove the stage is wired: the flag path, the candidate counts, the
+fail-open branch, the emitted fields. Never quote an ordering it produced. The
+providers that mean something are `local` and `cohere`.
+
+The two questions worth asking of any reranked run come straight out of its JSON:
+
+```powershell
+# did the stage run, over how many candidates, and did it fail open?
+.\scripts\retrieve_rerank.ps1 -Query "…" -Rerank local -Json |
+    ConvertFrom-Json | Select-Object -ExpandProperty rerank
+
+# what did it actually move?
+.\scripts\retrieve_rerank.ps1 -Query "…" -Rerank local -Json |
+    ConvertFrom-Json | Select-Object -ExpandProperty hits |
+    Select-Object rank, pre_rerank_rank, rerank_score, source_path
+```
+
+A hit whose `pre_rerank_rank` is far below its `rank` is the stage earning its
+latency. If every `pre_rerank_rank` equals its `rank`, reranking ran and changed
+nothing — which is information, not a bug.
+
+`rank` and `score` disagreeing after a reranked run is expected: `score` stays
+the fused RRF score and is deliberately not overwritten by `rerank_score`, so the
+top hit need not carry the highest `score`.
+
+### `input_top_k` is the ceiling, and the price
+
+`rerank.input_top_k` (default 40) is how many fused candidates the reranker sees;
+`rerank.top_k` (default 6) is how many survive. Feeding it more than it keeps is
+the point — that is what lets it lift a passage from rank 30 to rank 2.
+
+Two operational consequences:
+
+- **Cost and latency are linear in `input_top_k`.** 40 candidates is 40 forward
+  passes on CPU, or 40 passages on the wire. This is the dial to turn when a
+  reranked query is too slow.
+- **Anything outside the window is unreachable.** With rerank on, a relevant
+  chunk that fusion ranked 45th cannot come back. So on a bad reranked result,
+  check `rerank.candidates` in the output *before* blaming the ordering, and
+  compare against the same query with `--rerank off`.
+
+Raising `input_top_k` above `retrieval.dense_top_k + retrieval.sparse_top_k`
+buys nothing: fusion can only hand over what the branches returned.
+
+### The local reranker downloads a model
+
+`--rerank local` pulls `BAAI/bge-reranker-base` (~1.1 GB) from Hugging Face on
+first use and caches it under the HF cache directory. Inside a container that
+cache is **not** persisted by default, so every fresh container re-downloads it.
+
+- First run is slow and needs network. Later runs on the same container are not.
+- For repeated use, mount the cache (`~/.cache/huggingface` on the host) or bake
+  the weights into the image. A production container that downloads a
+  cross-encoder on its first request is a latency incident, not a cold start.
+- No key is involved, and no passage leaves the machine — that is the point of
+  the local provider.
+- The model is loaded lazily, on the first query rather than at construction, so
+  an argument error never pays for a download.
+
+### Rerank failures
+
+**`--rerank local` fails with "needs sentence-transformers", exit 2.**
+The optional dependency is not installed in the interpreter running the command.
+Install it (it ships in the `rag` extra) or use `--rerank fake` / `--rerank off`.
+This is a usage error, not a runtime fault: retrying cannot fix it, and silently
+falling back to `fake` would fabricate a quality claim.
+
+**`--rerank cohere` fails with "needs an API key", exit 2.**
+`COHERE_API_KEY` is unset in the environment the command runs in — inside the
+container that means it is not in `.env`. It is checked before any query runs, so
+the failure is a usage error rather than a mid-request outage. Never pass the key
+as a flag: it would land in shell history and in `docker inspect`.
+
+**The run succeeds but `rerank.applied` is `false` and `rerank.error` is set.**
+This is `fail_open: true` doing its job: the reranker errored or timed out, the
+fusion order was returned, and the query succeeded. A `rerank_failed_open`
+warning is in the logs with the provider and the error. Serving un-reranked hits
+is a degradation, not an outage — but a *persistent* one means ordering quality
+has quietly dropped, so treat a steady stream of these as an incident.
+
+To make the same failure loud instead, set `rerank.fail_open: false` and accept
+that a provider outage becomes a failed request.
+
+**Reranking is much slower than retrieval.**
+Expected. A cross-encoder over 40 candidates is the slowest stage in the path —
+hundreds of milliseconds on CPU against tens for the Qdrant round trip. Lower
+`input_top_k`, or leave rerank off for latency-sensitive work.
+
+**Ordering looks wrong with `--rerank fake`.**
+Not a defect. `fake` models nothing. Compare with `--rerank off` and, if you need
+a real answer, `--rerank local`.
+
 ### Score the golden set
 
 ```bash
@@ -283,6 +399,12 @@ Reports and never gates. Read the number with the embedder attached: on `fake`
 the dense branch is hash noise so the score is a plumbing assertion — though the
 sparse branch is genuinely lexical even there, because BM25 weights come from
 the text. Full caveats in [evaluation.md](evaluation.md#reading-a-hitk-number-honestly).
+
+To ask what reranking is worth, score the same golden set twice — once with
+rerank off, once with the provider under test — and compare `hit@k` at small `k`.
+The comparison is only meaningful on `--embedder openai` with `--rerank local` or
+`--rerank cohere`; a `fake` embedder plus a `fake` reranker measures plumbing
+twice. See [evaluation.md](evaluation.md#pre--and-post-rerank-hitk).
 
 ### Retrieval failures
 
