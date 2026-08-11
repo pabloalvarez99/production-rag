@@ -38,6 +38,7 @@ ENV_KEYS = (
     "QDRANT_COLLECTION",
     "CONFIG_PATH",
     "OPENAI_API_KEY",
+    "QDRANT_API_KEY",
 )
 """Every environment variable :class:`Settings` reads, cleared before each test."""
 

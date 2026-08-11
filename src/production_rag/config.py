@@ -40,7 +40,7 @@ class Settings(BaseSettings):
 
     #: Fields whose value must never reach a log line, a response body or the
     #: second brain. Enforced by :meth:`safe_dump`.
-    SECRET_FIELDS: ClassVar[frozenset[str]] = frozenset({"openai_api_key"})
+    SECRET_FIELDS: ClassVar[frozenset[str]] = frozenset({"openai_api_key", "qdrant_api_key"})
 
     # --- application identity -------------------------------------------------
     app_name: str = "production-rag"
@@ -56,10 +56,13 @@ class Settings(BaseSettings):
     port: int = 8000
 
     # --- retrieval backend ----------------------------------------------------
-    # Declared now, dialled from M1 onwards. M0 only reports whether a target
-    # is configured (see the /v1/ready route) — it opens no sockets.
+    # The ingest job (M1) dials this; the API still does not. /v1/ready reports
+    # whether a target is configured and opens no sockets.
     qdrant_url: str = "http://localhost:6333"
-    qdrant_collection: str = "documents"
+    # Matches configs/default.yaml, docker-compose.yml and scripts/health.ps1.
+    # One name across all four, so an operator never ingests into one collection
+    # and probes another.
+    qdrant_collection: str = "production_rag"
 
     # --- optional file-based configuration ------------------------------------
     # Compose passes CONFIG_PATH=/app/configs/default.yaml. The YAML layer
@@ -72,6 +75,10 @@ class Settings(BaseSettings):
     # Never logged, never echoed in a response. Absent by default so the whole
     # M0 test suite runs with no credentials present.
     openai_api_key: str | None = None
+    # Unset against a local container, which requires no auth. Present for a
+    # managed Qdrant, where it must come from the environment like any other
+    # credential — never from a CLI flag or a config file.
+    qdrant_api_key: str | None = None
 
     @field_validator("api_prefix")
     @classmethod

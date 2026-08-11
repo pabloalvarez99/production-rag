@@ -23,9 +23,22 @@ def test_defaults(settings: Settings) -> None:
     assert settings.host == "0.0.0.0"  # noqa: S104 - container-friendly default, asserted on purpose
     assert settings.port == 8000
     assert settings.qdrant_url == "http://localhost:6333"
-    assert settings.qdrant_collection == "documents"
+    assert settings.qdrant_collection == "production_rag"
     assert settings.config_path is None
     assert settings.openai_api_key is None
+    assert settings.qdrant_api_key is None
+
+
+def test_collection_default_matches_the_rest_of_the_repo(settings: Settings) -> None:
+    """One collection name across settings, YAML, compose and the health script.
+
+    Two defaults that disagree produce the worst kind of bug report: ingest
+    reports success, the probe reports an empty collection, and both are telling
+    the truth about different collections.
+    """
+    from production_rag.config_loader import QdrantConfig
+
+    assert settings.qdrant_collection == QdrantConfig().collection == "production_rag"
 
 
 def test_env_file_is_wired_for_the_real_settings_class() -> None:
@@ -138,6 +151,18 @@ def test_safe_dump_masks_the_api_key(settings_factory: SettingsFactory) -> None:
     # And the guard is needed: the plain pydantic dump does expose the value,
     # which is exactly why nothing in the codebase calls model_dump() for logs.
     assert configured.model_dump()["openai_api_key"] == secret
+
+
+def test_safe_dump_masks_every_declared_secret(settings_factory: SettingsFactory) -> None:
+    """Every field in ``SECRET_FIELDS`` is masked, not only the OpenAI one."""
+    configured = settings_factory(
+        openai_api_key="sk-live-not-real",  # noqa: S106 - fake value for the assertion
+        qdrant_api_key="qdrant-live-not-real",  # noqa: S106 - fake value for the assertion
+    )
+    dumped = configured.safe_dump()
+
+    assert set(Settings.SECRET_FIELDS) == {"openai_api_key", "qdrant_api_key"}
+    assert all(dumped[name] == "***" for name in Settings.SECRET_FIELDS)
 
 
 def test_safe_dump_leaves_absent_secrets_as_none(settings: Settings) -> None:
