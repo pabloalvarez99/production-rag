@@ -59,11 +59,11 @@ TIER2_METRICS = (
 UNANSWERABLE_CATEGORY = "unanswerable"
 """Golden category whose correct outcome is a refusal.
 
-A case is treated as unanswerable when it carries this category *or* has no
-expected source path. Two signals rather than one because the golden set is
-hand-written: a case labelled ``unanswerable`` that someone gave a source, or a
-sourceless case someone forgot to label, must not silently score as a system
-failure.
+Used as a fallback by :func:`is_unanswerable` when a record carries no explicit
+``answerable`` field, alongside the expected source list being empty. Two
+fallback signals rather than one because the golden set is hand-written: a case
+labelled ``unanswerable`` that someone gave a source, or a sourceless case
+someone forgot to label, must not silently score as a system failure.
 """
 
 
@@ -237,7 +237,16 @@ def _round(value: float | None) -> float | None:
 
 
 def is_unanswerable(case: GoldenCase) -> bool:
-    """Whether the correct behaviour for *case* is a refusal."""
+    """Whether the correct behaviour for *case* is a refusal.
+
+    The golden set's explicit ``answerable`` field wins when it carries one: it
+    is the author's stated intent, and it is the only signal that can mark a
+    question unanswerable *despite* having a plausible source, or answerable
+    despite the sources being listed elsewhere. The category and the empty
+    source list remain as fallbacks for records written before the field.
+    """
+    if case.answerable is not None:
+        return not case.answerable
     return case.category == UNANSWERABLE_CATEGORY or not case.expected_source_paths
 
 

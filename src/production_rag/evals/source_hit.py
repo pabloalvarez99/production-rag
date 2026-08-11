@@ -86,6 +86,13 @@ class GoldenCase:
     question: str
     expected_source_paths: tuple[str, ...]
     category: str | None = None
+    answerable: bool | None = None
+    """The golden set's explicit answerable flag, when it carries one.
+
+    Separate from ``expected_source_paths`` being empty because the two can
+    disagree in a hand-written file, and tier 2 grades refusals against this.
+    ``None`` means the record predates the field.
+    """
 
     @property
     def is_scorable(self) -> bool:
@@ -119,6 +126,7 @@ class GoldenCase:
             # A missing or non-list field is a malformed record.
             raise EvalError(f"golden line {line_number}: 'expected_source_paths' must be a list")
         category = raw.get("category")
+        answerable = raw.get("answerable")
         return cls(
             id=case_id,
             question=question,
@@ -126,6 +134,9 @@ class GoldenCase:
             # by hand, and a stray backslash or "./" prefix must not read as a miss.
             expected_source_paths=tuple(normalise_source_path(str(path)) for path in expected),
             category=category if isinstance(category, str) else None,
+            # Absent on older golden files, so None rather than a default of True:
+            # "the file did not say" and "the file said yes" must stay distinct.
+            answerable=answerable if isinstance(answerable, bool) else None,
         )
 
 

@@ -101,6 +101,55 @@ class TestGoldenSet:
         )
         assert load_golden(golden)[0].is_scorable is False
 
+    def test_the_repository_golden_set_labels_every_case_answerable_or_not(self) -> None:
+        # Tier 2 grades refusals against this field, so a record without it would
+        # fall back to guessing from the category.
+        cases = load_golden(Path("data/eval/golden.jsonl"))
+        assert all(case.answerable is not None for case in cases)
+        assert all(case.answerable is case.is_scorable for case in cases)
+
+    def test_the_answerable_field_is_parsed(self, tmp_path: Path) -> None:
+        golden = tmp_path / "golden.jsonl"
+        golden.write_text(
+            json.dumps(
+                {
+                    "id": "q",
+                    "question": "why",
+                    "expected_source_paths": ["a.md"],
+                    "answerable": False,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        assert load_golden(golden)[0].answerable is False
+
+    def test_a_record_without_the_answerable_field_leaves_it_unset(self, tmp_path: Path) -> None:
+        # None, not True: an older golden file did not say, and tier 2 must fall
+        # back to the category rather than assume.
+        golden = tmp_path / "golden.jsonl"
+        golden.write_text(
+            json.dumps({"id": "q", "question": "why", "expected_source_paths": ["a.md"]}) + "\n",
+            encoding="utf-8",
+        )
+        assert load_golden(golden)[0].answerable is None
+
+    def test_a_non_boolean_answerable_field_is_ignored(self, tmp_path: Path) -> None:
+        golden = tmp_path / "golden.jsonl"
+        golden.write_text(
+            json.dumps(
+                {
+                    "id": "q",
+                    "question": "why",
+                    "expected_source_paths": ["a.md"],
+                    "answerable": "yes",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        assert load_golden(golden)[0].answerable is None
+
     def test_paths_are_normalised_like_the_ingest_does(self, tmp_path: Path) -> None:
         # A hand-written golden set must not read as a miss because of a stray
         # backslash or "./" prefix.

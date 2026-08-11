@@ -75,8 +75,20 @@ def _retriever(*, empty: bool = False) -> Retriever:
     return Retriever(store=store, embedder=embedder, config=RetrievalConfig())
 
 
-def _case(case_id: str, question: str, *paths: str, category: str | None = None) -> GoldenCase:
-    return GoldenCase(id=case_id, question=question, expected_source_paths=paths, category=category)
+def _case(
+    case_id: str,
+    question: str,
+    *paths: str,
+    category: str | None = None,
+    answerable: bool | None = None,
+) -> GoldenCase:
+    return GoldenCase(
+        id=case_id,
+        question=question,
+        expected_source_paths=paths,
+        category=category,
+        answerable=answerable,
+    )
 
 
 def _citation(marker: int, source_path: str, text: str = "passage text") -> Citation:
@@ -151,6 +163,18 @@ class TestUnanswerable:
 
     def test_an_ordinary_case_is_answerable(self) -> None:
         assert is_unanswerable(_case("q", "why", "a.md", category="conceptual")) is False
+
+    def test_the_explicit_field_marks_it(self) -> None:
+        assert is_unanswerable(_case("q", "why", "a.md", answerable=False)) is True
+
+    def test_the_explicit_field_beats_an_empty_source_list(self) -> None:
+        # A question the golden set calls answerable but whose sources are still
+        # to be filled in must not be graded as a refusal case.
+        assert is_unanswerable(_case("q", "why", answerable=True)) is False
+
+    def test_the_explicit_field_beats_the_category(self) -> None:
+        case = _case("q", "why", "a.md", category="unanswerable", answerable=True)
+        assert is_unanswerable(case) is False
 
 
 class TestScoreAnswer:
