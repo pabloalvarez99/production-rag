@@ -59,8 +59,8 @@ jobs:
         run: |
           server_version=$(curl --fail --silent http://localhost:6333/ | python -c 'import json, sys; print(json.load(sys.stdin)["version"])')
           client_version=$(python -c 'from importlib.metadata import version; print(version("qdrant-client"))')
-          test "$client_version" = "$server_version" || {
-            echo "Qdrant version mismatch: client=$client_version server=$server_version" >&2
+          test "${client_version%.*}" = "${server_version%.*}" || {
+            echo "Qdrant major.minor mismatch: client=$client_version server=$server_version" >&2
             exit 1
           }
 

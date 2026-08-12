@@ -99,6 +99,11 @@ obs = [
 # Ragas returns as a real dependency if and when an optional adapter is built
 # behind RUN_LLM_EVALS=1, not before.
 eval = []
+# Documentation capture only. Installing the project, running the service, and
+# running the main CI job never download Playwright or a browser.
+docs = [
+    "playwright>=1.49",
+]
 
 [project.scripts]
 # Same entrypoint as `python -m production_rag.ingest`, for anyone who prefers a

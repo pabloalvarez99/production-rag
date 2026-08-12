@@ -8,11 +8,21 @@ A production-shaped Retrieval-Augmented Generation service with hybrid Qdrant re
 
 ## Demo
 
-Reserved recording target: `docs/assets/production-rag-demo.gif`
+These are generated from the real Compose stack with the deterministic fake providers and
+sample corpus—not hand-taken screenshots. The grounded capture exposes its sources and node
+timings; the other two show the explicit refusal and dependency-failure contracts.
 
-*The recording shows one grounded answer with citations, followed by a deliberate refusal.*
+![Grounded answer with citations and pipeline timings](docs/assets/ui-grounded.png)
 
-Exact recording steps: [demo runbook](docs/demo.md). No image is embedded until that file exists.
+![Deliberate refusal with its reason](docs/assets/ui-refusal.png)
+
+![Service dependency failure rendered in the UI](docs/assets/ui-service-failure.png)
+
+Regenerate them with `pip install -e ".[docs]"`, `playwright install chromium`, then
+`python scripts/capture_ui.py`. The script fixes the viewport, questions, collection, fake
+providers, request-id label, and timing labels so identical app/browser inputs produce
+byte-identical PNGs; it prints each SHA-256 digest for a second-run comparison. The outcome,
+answer, citations, refusal reason, and service failure are all produced by the live stack.
 
 ## Scorecard
 

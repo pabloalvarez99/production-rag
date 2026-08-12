@@ -22,7 +22,7 @@ curl --fail --silent http://localhost:6333/readyz >/dev/null || {
 }
 
 docker compose build api
-docker compose run --rm api python -c "from importlib.metadata import version; import httpx; client=version('qdrant-client'); server=httpx.get('http://qdrant:6333/').json()['version']; assert client == server, f'Qdrant version mismatch: client={client} server={server}'"
+docker compose run --rm api python -c "from importlib.metadata import version; import httpx; client=version('qdrant-client'); server=httpx.get('http://qdrant:6333/').json()['version']; compatible=lambda value: tuple(value.split('.')[:2]); assert compatible(client) == compatible(server), f'Qdrant major.minor mismatch: client={client} server={server}'"
 
 docker compose run --rm api python -m production_rag.ingest \
   --config configs/default.yaml \

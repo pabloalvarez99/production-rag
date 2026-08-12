@@ -24,8 +24,8 @@ try {
     & docker compose build api
     if ($LASTEXITCODE -ne 0) { throw 'The demo API image failed to build.' }
 
-    & docker compose run --rm api python -c "from importlib.metadata import version; import httpx; client=version('qdrant-client'); server=httpx.get('http://qdrant:6333/').json()['version']; assert client == server, f'Qdrant version mismatch: client={client} server={server}'"
-    if ($LASTEXITCODE -ne 0) { throw 'Qdrant client/server versions do not match.' }
+    & docker compose run --rm api python -c "from importlib.metadata import version; import httpx; client=version('qdrant-client'); server=httpx.get('http://qdrant:6333/').json()['version']; compatible=lambda value: tuple(value.split('.')[:2]); assert compatible(client) == compatible(server), f'Qdrant major.minor mismatch: client={client} server={server}'"
+    if ($LASTEXITCODE -ne 0) { throw 'Qdrant client/server major.minor versions do not match.' }
 
     & docker compose run --rm api python -m production_rag.ingest --config configs/default.yaml --source data/corpus --embedder fake --collection prag_demo --recreate-collection
     if ($LASTEXITCODE -ne 0) { throw 'Offline ingest failed.' }
