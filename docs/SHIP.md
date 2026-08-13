@@ -87,6 +87,7 @@ series ([PORTFOLIO.md](PORTFOLIO.md)).
 | See the series and what P2 needs before it starts | [PORTFOLIO.md](PORTFOLIO.md) |
 | Run the checks, or send a fix | [CONTRIBUTING.md](../CONTRIBUTING.md) |
 | Report a vulnerability, or handle a leaked key | [SECURITY.md](../SECURITY.md) |
+| Read why the system is shaped this way, end to end | [CASESTUDY.md](CASESTUDY.md) |
 | Understand a decision rather than the code | [`docs/adr/`](adr/) |
 | Read how the measurement is defined | [evaluation.md](evaluation.md) and [ADR-0010](adr/0010-statistical-reporting.md) |
 | Operate the stack | [runbook.md](runbook.md) |

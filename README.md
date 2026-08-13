@@ -20,7 +20,9 @@ Each one has a stated position here, an ADR, and a test.
 
 **Ship status: public-ready free path.** Clone, run, and review everything below without a
 credential; the one open item is a hosted-provider baseline run. One page with the demo, what
-CI proves, and what is deliberately absent: [docs/SHIP.md](docs/SHIP.md). How to run the checks
+CI proves, and what is deliberately absent: [docs/SHIP.md](docs/SHIP.md). The engineering
+story behind the trade-offs, with the failure behaviour and the honest limits:
+[docs/CASESTUDY.md](docs/CASESTUDY.md). How to run the checks
 and contribute: [CONTRIBUTING.md](CONTRIBUTING.md). How to report a vulnerability, and why no
 key belongs in an issue: [SECURITY.md](SECURITY.md).
 
