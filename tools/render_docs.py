@@ -42,16 +42,24 @@ def _provenance(data: dict[str, Any], *, n: int) -> str:
     return fields
 
 
+def _items(data: dict[str, Any]) -> int:
+    try:
+        return int(data["provenance"]["golden"]["items"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RenderError("scorecard is missing its golden-set size") from exc
+
+
 def _metric(data: dict[str, Any], metric: str, config: str) -> str:
+    """Render one value bare. Its provenance is stated once, by the footnote token."""
     try:
         value = data["configs"][config][metric]
-        n = int(data["provenance"]["golden"]["items"])
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError) as exc:
         raise RenderError(f"unresolved metric token: {metric}:{config}") from exc
-    return f"**{_number(value)}**<br><sub>{_provenance(data, n=n)}</sub>"
+    return f"**{_number(value)}**"
 
 
 def _comparison(data: dict[str, Any], a: str, b: str, metric: str) -> str:
+    """Render one paired delta. This line keeps its own provenance: a delta gets quoted."""
     matches = [
         item
         for item in data.get("comparisons", [])
@@ -80,14 +88,15 @@ def _comparison(data: dict[str, Any], a: str, b: str, metric: str) -> str:
 def resolve_token(data: dict[str, Any], expression: str) -> str:
     """Resolve one token expression or fail closed."""
     parts = expression.split(":")
+    if parts == ["footnote"]:
+        return _provenance(data, n=_items(data))
     if len(parts) == 2 and parts[0] == "provenance":
         field = parts[1]
         try:
             value = data["provenance"][field]
-            n = int(data["provenance"]["golden"]["items"])
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError) as exc:
             raise RenderError(f"unresolved provenance token: {field}") from exc
-        return f"**{value}**<br><sub>{_provenance(data, n=n)}</sub>"
+        return f"**{value}**"
     if len(parts) == 2:
         return _metric(data, parts[0], parts[1])
     if len(parts) == 4 and parts[0] == "comparison":
