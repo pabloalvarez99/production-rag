@@ -3,11 +3,17 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="description" content="Grounded answers with citations from an indexed corpus, and an explicit refusal when the evidence is absent.">
     <title>{% block title %}Production RAG{% endblock %}</title>
+    {# An inline SVG icon would carry the SVG namespace URL, and this UI is asserted to
+       reference no external origin. An empty data URI keeps the tab request local. #}
+    <link rel="icon" href="data:,">
     <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
     <script src="{{ url_for('static', path='/htmx.min.js') }}" defer></script>
   </head>
   <body>
-    <main class="shell">{% block content %}{% endblock %}</main>
+    <a class="skip-link" href="#question">Skip to the question box</a>
+    <main class="shell" id="main">{% block content %}{% endblock %}</main>
   </body>
 </html>

@@ -30,3 +30,24 @@ fake embedder, and start the web server. They make no billed provider call.
 This is a plumbing demonstration, not a quality evaluation: the embedder, LLM,
 and reranker are deterministic fakes. Stop the stack afterward with
 `docker compose down`; the named Qdrant volume is retained.
+
+## What the page shows
+
+The header carries a **Demo mode (free / deterministic)** label, and every result
+repeats it in its diagnostics footer. The label is literal: the UI route pins the
+request to the fake embedder and the fake LLM, so no API key is read and no billed
+provider is called. A grounded result separates the **Answer** from the
+**Citations** that support it, each marker linking to the passage it came from; a
+refusal states its reason instead of guessing; a dependency failure says so without
+leaking the underlying error. Per-node durations sit behind the collapsed
+**Pipeline timings** control.
+
+## Refresh the still captures
+
+`docs/assets/ui-grounded.png`, `ui-refusal.png` and `ui-service-failure.png` come
+from `python scripts/capture_ui.py`, after `pip install -e ".[docs]"` and
+`playwright install chromium`. That script drives the same credential-free stack
+these setup scripts start — fake providers, local corpus, no key — so refreshing the
+images costs only the time it takes to run. The committed images predate the current
+header label, the Answer/Citations split, and the service-link footer; re-run the
+capture to bring them back in step.

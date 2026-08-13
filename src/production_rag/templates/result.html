@@ -2,13 +2,14 @@
   <article class="outcome outcome-grounded" data-outcome="grounded">
     <p class="outcome-label">Grounded answer</p>
     <h2>Supported by the indexed corpus</h2>
+    <h3 class="section-heading">Answer</h3>
     <p class="answer">{% for segment in segments %}{% if segment.marker %}<a class="citation-marker" href="#source-{{ segment.marker }}" aria-label="Reveal source {{ segment.marker }}">{{ segment.text }}</a>{% else %}{{ segment.text }}{% endif %}{% endfor %}</p>
-    <h3>Sources</h3>
-    <ol class="citations">
+    <h3 class="section-heading" id="citations-heading">Citations</h3>
+    <ol class="citations" aria-labelledby="citations-heading">
       {% for citation in result.citations %}
         <li id="source-{{ citation.marker }}" tabindex="-1">
-          <p><strong>[{{ citation.marker }}] {{ citation.source_path }}</strong></p>
-          <p>{{ citation.text }}</p>
+          <p class="citation-head"><span class="citation-badge">[{{ citation.marker }}]</span> <cite>{{ citation.source_path }}</cite></p>
+          <p class="citation-text">{{ citation.text }}</p>
         </li>
       {% endfor %}
     </ol>
@@ -16,24 +17,27 @@
   <article class="outcome outcome-refused" data-outcome="refused">
     <p class="outcome-label">Deliberate refusal</p>
     <h2>No supported answer</h2>
+    <p class="banner">The system searched the corpus, found no supporting evidence, and declined to answer.</p>
     <p class="answer">{{ result.answer }}</p>
-    <p>The system searched the corpus, found no supporting evidence, and declined to answer.</p>
-    {% if result.refusal_reason %}<p class="reason">Reason: {{ result.refusal_reason }}</p>{% endif %}
+    {% if result.refusal_reason %}<p class="reason"><span class="reason-key">Reason</span> {{ result.refusal_reason }}</p>{% endif %}
 {% elif state == "empty" %}
   <article class="outcome outcome-empty" data-outcome="empty-store">
     <p class="outcome-label">Corpus unavailable</p>
     <h2>Nothing searchable yet</h2>
-    <p>{{ message }}</p>
-    <code>python -m production_rag.ingest --source data/raw/sample --embedder fake --recreate-collection</code>
+    <p class="banner">{{ message }}</p>
+    <p class="hint">Index the sample corpus with the credential-free embedder, then run the query again.</p>
+    <pre class="command"><code>python -m production_rag.ingest --source data/raw/sample --embedder fake --recreate-collection</code></pre>
 {% else %}
   <article class="outcome outcome-error" data-outcome="error">
     <p class="outcome-label">Service failure</p>
     <h2>The pipeline could not complete</h2>
-    <p>{{ message }}</p>
+    <p class="banner">{{ message }}</p>
+    <p class="hint">Nothing was answered and nothing was guessed. The request id below correlates this render with the server logs.</p>
 {% endif %}
 
     <footer class="diagnostics">
       <span>Request <code>{{ request_id }}</code></span>
+      <span class="chip">Demo mode (free / deterministic)</span>
       {% if result and result.debug and result.debug.timings_ms %}
         <details>
           <summary>Pipeline timings</summary>
@@ -41,6 +45,7 @@
             {% for node, timing in result.debug.timings_ms.items() %}
               <div><dt>{{ node }}</dt><dd>{{ "%.2f"|format(timing) }} ms</dd></div>
             {% endfor %}
+            <div class="total"><dt>total</dt><dd>{{ "%.2f"|format(result.debug.timings_ms.values()|sum) }} ms</dd></div>
           </dl>
         </details>
       {% endif %}

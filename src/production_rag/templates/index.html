@@ -5,31 +5,51 @@
     <p class="eyebrow">Evidence first · offline capable</p>
     <h1>Ask the corpus.</h1>
     <p class="lede">A grounded answer when the evidence supports one. A deliberate refusal when it does not.</p>
+    <p class="mode-badge">
+      <span class="mode-tag">Demo mode (free / deterministic)</span>
+      <span class="mode-note">Fake embedder, fake LLM, local corpus. No API key is read and no billed provider is called, so the same question returns the same answer on every run.</span>
+    </p>
   </header>
 
   <section class="query-panel" aria-labelledby="query-title">
     <h2 id="query-title">Query</h2>
     <form hx-post="/ui/query" hx-target="#result" hx-swap="innerHTML" hx-indicator="#querying">
       <label for="question">Question</label>
-      <textarea id="question" name="question" rows="3" required maxlength="8000" placeholder="What does the corpus say?"></textarea>
-      <div class="examples" aria-label="Example questions">
+      <textarea id="question" name="question" rows="3" required maxlength="8000"
+                aria-describedby="question-hint" placeholder="What does the corpus say?"></textarea>
+      <p id="question-hint" class="hint">Answered only from the indexed corpus. Markers such as [1] link to the passage they came from.</p>
+      <div class="examples" role="group" aria-label="Example questions">
+        <span class="examples-label">Try</span>
         <button type="button" data-question="Why does hybrid search use reciprocal rank fusion?">Answerable example</button>
         <button type="button" data-question="Who won the Antarctic underwater chess championship?">Refusal example</button>
       </div>
-      <button class="submit" type="submit">Run grounded query</button>
-      <span id="querying" class="htmx-indicator" role="status">Looking for supporting evidence…</span>
+      <div class="actions">
+        <button class="submit" type="submit">Run grounded query</button>
+        <span id="querying" class="htmx-indicator" role="status">Looking for supporting evidence…</span>
+      </div>
     </form>
   </section>
 
-  <section id="result" class="result-region" aria-live="polite">
-    <div class="empty-prompt">Results will appear here, including evidence and pipeline timings.</div>
+  <section id="result" class="result-region" aria-live="polite" aria-label="Result">
+    <div class="empty-prompt">The answer, the citations behind it, and the pipeline timings appear here.</div>
   </section>
+
+  <footer class="page-footer">
+    <span>Grounded answer, refusal and dependency failure all come from the same in-process pipeline the HTTP API uses.</span>
+    <nav aria-label="Service links">
+      <a href="/docs">OpenAPI</a>
+      <a href="/health">Health</a>
+      <a href="/openapi.json">Schema</a>
+    </nav>
+  </footer>
 
   <script>
     document.querySelectorAll('[data-question]').forEach(function (button) {
       button.addEventListener('click', function () {
-        document.getElementById('question').value = button.dataset.question;
-        document.getElementById('question').focus();
+        var box = document.getElementById('question');
+        box.value = button.dataset.question;
+        box.focus();
+        box.setSelectionRange(box.value.length, box.value.length);
       });
     });
   </script>

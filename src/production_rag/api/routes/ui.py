@@ -79,7 +79,10 @@ async def submit_query(
     form = parse_qs((await request.body()).decode("utf-8"), keep_blank_values=True)
     question = form.get("question", [""])[0]
     try:
-        payload = QueryRequest(question=question, llm="fake", debug=True)
+        # The demo path is pinned to the credential-free providers explicitly: the UI
+        # promises "free / deterministic", so it must not inherit a schema default that
+        # could later change to a billed provider.
+        payload = QueryRequest(question=question, llm="fake", embedder="fake", debug=True)
     except ValidationError:
         return templates.TemplateResponse(
             request=request,
