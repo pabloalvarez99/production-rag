@@ -60,8 +60,9 @@ Those three captures are generated from the running stack, not hand-taken:
 `pip install -e ".[docs]"`, `playwright install chromium`, then `python scripts/capture_ui.py`.
 The script fixes the viewport, questions, collection, providers, request-id label and timing
 labels, so identical app and browser inputs produce byte-identical PNGs, and it prints each
-SHA-256 digest for a second-run comparison. The committed images predate the most recent UI
-pass, so the live page is ahead of them until the capture script is run again.
+SHA-256 digest for a second-run comparison. A change to the templates or the stylesheet
+refreshes these files in the same pull request, so a stale capture is provable rather than
+arguable.
 
 ### 2. Ingest and query without the UI
 
