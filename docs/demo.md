@@ -48,6 +48,6 @@ leaking the underlying error. Per-node durations sit behind the collapsed
 from `python scripts/capture_ui.py`, after `pip install -e ".[docs]"` and
 `playwright install chromium`. That script drives the same credential-free stack
 these setup scripts start — fake providers, local corpus, no key — so refreshing the
-images costs only the time it takes to run. The committed images predate the current
-header label, the Answer/Citations split, and the service-link footer; re-run the
-capture to bring them back in step.
+images costs only the time it takes to run. Rebuild the API image first
+(`docker compose build api`): the Dockerfile copies `src/` in, so a capture against a
+stale image silently documents the previous UI and prints unchanged digests.
