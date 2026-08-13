@@ -12,8 +12,8 @@ true. That is why exactly one of them is complete.
 
 | # | Project | What it adds | State |
 | --- | --- | --- | --- |
-| **P1** | **[production-rag](../README.md)** — hybrid RAG service | Hybrid dense + sparse retrieval with RRF, cross-encoder rerank, grounded answers with resolvable citations, refusal as a first-class outcome, two-tier offline evaluation with paired statistics, server-rendered query UI | **done for portfolio purposes**; one hosted baseline run outstanding |
-| P2 | Agentic RAG research agent | Query planning, multi-step retrieval, tool use, and a stopping rule, over P1's retrieval core rather than a new one | planned — starts once P1's hosted baseline exists, so agent behaviour is measured against a known retrieval floor |
+| **P1** | **[production-rag](../README.md)** — hybrid RAG service | Hybrid dense + sparse retrieval with RRF, cross-encoder rerank, grounded answers with resolvable citations, refusal as a first-class outcome, two-tier offline evaluation with paired statistics, server-rendered query UI | **portfolio-complete on the free path**; one hosted baseline run outstanding |
+| P2 | Agentic RAG research agent | Query planning, multi-step retrieval, tool use, and a stopping rule, over P1's retrieval core rather than a new one | planned — six entry criteria below, starting with P1's hosted baseline so agent behaviour is measured against a known retrieval floor |
 | P3 | Multi-agent system | An orchestrator plus specialists, explicit handoff contracts, shared state, and failure containment between agents | planned — needs P2's single-agent trace and cost profile as its comparison baseline |
 | P4 | RepoMind code intelligence | Change-impact answers over a repository: which artefacts a change touches, with evidence, on a corpus and golden set of its own | scoped — three preconditions before any code, chief among them a corpus where BM25 and direct neighbours provably miss the answer |
 | P5 | Full production AI platform | The hardening deliberately excluded from P1: auth, rate limits, a metrics endpoint, payload filters, retry and timeout policy, load and concurrency work | planned — the crown project; it wraps P1 through P4 rather than replacing them |
@@ -30,11 +30,12 @@ detail in the [README](../README.md).
 
 ### Status
 
-**Done for portfolio purposes.** Every milestone from scaffold through two-tier evaluation
-is landed on `main`, plus the adversarial corpus, the paired statistics, the query UI, and
-the publication path that renders the measurement artefact into the README and fails CI when
-the two disagree. Nothing is queued for it, and the free path is public-ready: a reviewer
-clones it and reaches a cited answer without a credential.
+**Portfolio-complete on the free path.** Every milestone from scaffold through two-tier
+evaluation is landed on `main`, plus the adversarial corpus, the paired statistics, the query
+UI, and the publication path that renders the measurement artefact into the README and fails
+CI when the two disagree. Nothing is queued for it, and the credential-free path is
+public-ready: a reviewer clones it and reaches a cited answer without an account or a key.
+Short version with the CI evidence: [SHIP.md](SHIP.md).
 
 One thing is deliberately open: no hosted-provider baseline has been run, so the published
 scorecard is an explicitly labelled local-provider plumbing fixture rather than a quality
@@ -71,6 +72,42 @@ the free path: ingest, the query API, both evaluation tiers, and regenerating th
 - **Restraint recorded as decisions.** Every ADR carries the alternatives that were rejected
   and why — including the reporting boundary that keeps a favourable-looking result from
   being announced.
+
+## P2 — Agentic RAG Research Agent: entry criteria
+
+P2 adds a research loop on top of P1: plan a query, retrieve more than once, use a tool, decide
+when to stop, and answer with citations that survive the extra hops. It does not start because
+the idea is ready. It starts when the conditions below are true, and each one is checkable by
+someone who did not write it.
+
+1. **P1's hosted baseline exists.** One billed run with named providers, published through the
+   same scorecard contract. Without it there is no retrieval floor, so any agent result is a
+   number with nothing to compare against.
+2. **P1 is consumed, not copied.** P2 depends on `production_rag` as an installed library — the
+   `run_query` entry point and the retrieval modules — or calls `POST /v1/query` over HTTP. A
+   forked retrieval stack is a rewrite pretending to be a series, and it would make the
+   comparison in gate 5 meaningless.
+3. **The free path runs first.** The whole loop — planning, several retrieval passes, tool
+   calls, stopping — runs end to end on the deterministic providers, with CI green while the
+   provider keys are empty strings, before a hosted call is wired in. Same rule as P1: a
+   project nobody can run without paying is not a portfolio project.
+4. **A golden set the single pass provably cannot answer.** Questions where P1's one-shot
+   retrieval demonstrably fails, established by a mechanical predicate rather than intuition:
+   the answer needs evidence from more than one document, or a fact that surfaces only after a
+   first retrieval narrows the question. A set the baseline already solves makes the agent look
+   useful by construction. This is P1's `deep_rank` lesson, a slice that passed schema
+   integrity while measuring nothing.
+5. **A paired comparison against that baseline.** Same items, same order, agent against single
+   pass, under the reporting boundary in
+   [ADR-0010](adr/0010-statistical-reporting.md): a delta becomes a claim only when its sample
+   size and interval allow it. An agent that spends more steps and wins nothing has to be
+   publishable as exactly that.
+6. **A budget and a stopping rule, both recorded.** A step ceiling and a spend ceiling per
+   question, enforced in code, with the real step count and cost in every report. An unbounded
+   agent loop is an outage with a research paper attached.
+
+Out of scope for P2, stated now: multi-agent orchestration belongs to P3, and auth, rate limits
+and load work belong to P5. P2 is one agent, one loop, measured against the floor P1 set.
 
 ## Standards applied to every project in the series
 
