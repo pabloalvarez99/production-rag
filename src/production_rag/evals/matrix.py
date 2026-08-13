@@ -20,11 +20,12 @@ from typing import Any
 from production_rag.config import get_settings
 from production_rag.config_loader import load_yaml_config
 from production_rag.evals.costs import (
-    MODEL_RATES_USD_PER_MILLION,
     UsageLedger,
     derive_call_counts,
     estimate_cost,
     exact_token_count,
+    format_preflight,
+    format_spend_summary,
     require_spending_consent,
 )
 from production_rag.evals.provenance import assert_collection_embedder
@@ -94,18 +95,6 @@ def _corpus_profile(corpus: str, config: Any) -> tuple[int, list[str]]:
             documents += 1
             embed_texts.extend(chunk.embed_text for chunk in chunks)
     return documents, embed_texts
-
-
-def _print_estimate(estimate: Any) -> None:
-    print("Cost estimate (USD; rate assumptions per 1M tokens):")
-    for model, rate in MODEL_RATES_USD_PER_MILLION.items():
-        print(f"  {model}: ${rate:.4f}")
-    print(
-        f"  chunks to embed={estimate.calls.document_embeddings}; "
-        f"query embeddings={estimate.calls.query_embeddings}; "
-        f"generations={estimate.calls.generations}; judge calls={estimate.calls.judge_calls}; "
-        f"expected=${estimate.expected_usd:.4f}; upper bound=${estimate.upper_bound_usd:.4f}"
-    )
 
 
 def _metrics(tier1: Any, tier2: Any) -> dict[str, float]:
@@ -255,7 +244,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_output_tokens=config.generation.max_output_tokens,
         billed=billed,
     )
-    _print_estimate(estimate)
+    for line in format_preflight(estimate):
+        print(line)
     require_spending_consent(billed=billed, yes_spend=args.yes_spend)
     ledger = UsageLedger(billed=billed, upper_bound_usd=estimate.upper_bound_usd)
     embedder = resolve_embedder(
@@ -347,10 +337,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         billed=billed,
     )
     _write_json(Path(args.report), scorecard)
-    print(
-        f"Cost summary: bound=${estimate.upper_bound_usd:.6f}; "
-        f"expected=${estimate.expected_usd:.6f}; actual=${ledger.cost_usd:.6f}"
-    )
+    print(format_spend_summary(estimate=estimate, actual_usd=ledger.cost_usd))
     print(json.dumps(scorecard, sort_keys=True))
     return 0
 

@@ -1,5 +1,7 @@
 import json
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -10,6 +12,9 @@ from production_rag.evals.costs import (
     UsageLedger,
     derive_call_counts,
     estimate_cost,
+    exact_token_count,
+    format_preflight,
+    format_spend_summary,
     require_spending_consent,
 )
 from production_rag.evals.matrix import CONFIGURATIONS, build_scorecard
@@ -25,6 +30,108 @@ from production_rag.retrieval.hybrid import Retriever
 from production_rag.retrieval.rerank import build_reranker
 from production_rag.retrieval.sparse import Bm25Encoder
 from production_rag.retrieval.store import CollectionMismatchError, InMemoryVectorStore
+
+
+class _StubEncoding:
+    """The slice of ``tiktoken.Encoding`` the preflight uses.
+
+    Faithful on the one behaviour under test: the real encoder refuses text that
+    looks like a control token unless the caller allows it through, and the
+    preflight has to allow it. Stubbed rather than imported because
+    ``tiktoken.encoding_for_model`` downloads its BPE table from an OpenAI host
+    on a cold cache, and this suite runs with no network (see
+    ``tests/conftest.py``).
+    """
+
+    def __init__(self) -> None:
+        self.encoded: list[str] = []
+
+    def encode(self, text: str, *, disallowed_special: tuple[str, ...] | str = "all") -> list[int]:
+        if disallowed_special == "all" and "<|endoftext|>" in text:
+            raise ValueError("Encountered text corresponding to disallowed special token")
+        self.encoded.append(text)
+        return list(range(len(text.split())))
+
+
+class _StubTiktoken(ModuleType):
+    def __init__(self, encoding: _StubEncoding) -> None:
+        super().__init__("tiktoken")
+        self._encoding = encoding
+
+    def encoding_for_model(self, model: str) -> _StubEncoding:
+        return self._encoding
+
+
+@pytest.fixture
+def stub_tiktoken(monkeypatch: pytest.MonkeyPatch) -> _StubEncoding:
+    encoding = _StubEncoding()
+    monkeypatch.setitem(sys.modules, "tiktoken", _StubTiktoken(encoding))
+    return encoding
+
+
+def test_control_token_text_is_counted_as_content(stub_tiktoken: _StubEncoding) -> None:
+    text = "literal <|endoftext|> text"
+    assert exact_token_count([text], model="text-embedding-3-small") == 3
+    assert stub_tiktoken.encoded == [text]
+
+
+def test_missing_tiktoken_fails_the_preflight_instead_of_approximating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "tiktoken", None)
+    with pytest.raises(RuntimeError, match="requires the tiktoken package"):
+        exact_token_count(["text"], model="text-embedding-3-small")
+
+
+def test_fake_providers_report_zero_labelled_as_unbilled() -> None:
+    estimate = estimate_cost(
+        calls=CallCounts(100, 60, 60, 0),
+        embedding_tokens=1_000,
+        query_tokens=300,
+        max_context_tokens=6_000,
+        max_output_tokens=800,
+        billed=False,
+    )
+    assert (estimate.billed, estimate.expected_usd, estimate.upper_bound_usd) == (False, 0.0, 0.0)
+    preflight = format_preflight(estimate)
+    assert "$0.00" in preflight[0]
+    assert "unbilled" in preflight[0]
+    # A hosted rate table over a run that calls no hosted provider is the thing
+    # that makes a $0.00 read as a priced result.
+    assert not any("text-embedding-3-small" in line for line in preflight)
+    assert "generations=60" in preflight[1]
+    summary = format_spend_summary(estimate=estimate, actual_usd=0.0)
+    assert "$0.00" in summary
+    assert "unbilled" in summary
+
+
+def test_unbilled_summary_refuses_to_call_a_non_zero_total_free() -> None:
+    estimate = estimate_cost(
+        calls=CallCounts(0, 0, 0, 0),
+        embedding_tokens=0,
+        query_tokens=0,
+        max_context_tokens=6_000,
+        max_output_tokens=800,
+        billed=False,
+    )
+    with pytest.raises(CostAccountingError, match="unbilled run measured"):
+        format_spend_summary(estimate=estimate, actual_usd=0.01)
+
+
+def test_billed_preflight_publishes_its_rate_assumptions() -> None:
+    estimate = estimate_cost(
+        calls=CallCounts(100, 60, 60, 0),
+        embedding_tokens=1_000,
+        query_tokens=300,
+        max_context_tokens=6_000,
+        max_output_tokens=800,
+        billed=True,
+    )
+    preflight = format_preflight(estimate)
+    assert estimate.billed is True
+    assert any("text-embedding-3-small: $0.0200" in line for line in preflight)
+    assert f"upper bound=${estimate.upper_bound_usd:.4f}" in preflight[-1]
+    assert "unbilled" not in format_spend_summary(estimate=estimate, actual_usd=0.004)
 
 
 def test_emitted_scorecard_validates_exact_contract(tmp_path: Path) -> None:

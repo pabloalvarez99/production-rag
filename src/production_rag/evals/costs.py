@@ -13,6 +13,14 @@ MODEL_RATES_USD_PER_MILLION = {
     "gpt-4o-mini-output": 0.60,
 }
 
+UNBILLED_NOTE = "unbilled: every provider in this run is fake, so nothing is priced"
+"""How a zero is reported when no provider could have charged for the run.
+
+A bare ``$0.0000`` is ambiguous: it reads either as "no provider was called" or
+as "a paid run rounded to nothing". Only the first is ever true here, and the
+report says which.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class CallCounts:
@@ -33,6 +41,9 @@ class CostEstimate:
     upper_bound_usd: float
     embedding_tokens: int
     query_tokens: int
+    # Carried on the estimate rather than left to the caller: a zero without it
+    # cannot be told apart from a priced run that came to nothing.
+    billed: bool
 
     @property
     def estimated_usd(self) -> float:
@@ -147,7 +158,12 @@ def exact_token_count(texts: Iterable[str], *, model: str) -> int:
     except ImportError as exc:
         raise RuntimeError("exact hosted-cost preflight requires the tiktoken package") from exc
     encoding = tiktoken.encoding_for_model(model)
-    return sum(len(encoding.encode(text)) for text in texts)
+    # Corpus text can legitimately contain strings that look like tokenizer
+    # control tokens — `<|endoftext|>` appears in any document about tokenizers.
+    # They are document content to be counted, not instructions to inject a
+    # special token, and tiktoken's default would abort the whole preflight over
+    # one such string rather than count it.
+    return sum(len(encoding.encode(text, disallowed_special=())) for text in texts)
 
 
 def estimate_cost(
@@ -161,7 +177,14 @@ def estimate_cost(
 ) -> CostEstimate:
     """Compute a labelled expectation and upper bound from resolved ceilings."""
     if not billed:
-        return CostEstimate(calls, 0.0, 0.0, embedding_tokens, query_tokens)
+        return CostEstimate(
+            calls=calls,
+            expected_usd=0.0,
+            upper_bound_usd=0.0,
+            embedding_tokens=embedding_tokens,
+            query_tokens=query_tokens,
+            billed=False,
+        )
     embedding_total = embedding_tokens + query_tokens
     generation_input_bound = calls.generations * max_context_tokens
     generation_output_bound = calls.generations * max_output_tokens
@@ -182,6 +205,44 @@ def estimate_cost(
         upper_bound_usd=round(upper / 1_000_000, 4),
         embedding_tokens=embedding_tokens,
         query_tokens=query_tokens,
+        billed=True,
+    )
+
+
+def format_preflight(estimate: CostEstimate) -> list[str]:
+    """Render the preflight an operator authorizes, labelled by billing state."""
+    operations = (
+        f"chunks to embed={estimate.calls.document_embeddings}; "
+        f"query embeddings={estimate.calls.query_embeddings}; "
+        f"generations={estimate.calls.generations}; "
+        f"judge calls={estimate.calls.judge_calls}"
+    )
+    if not estimate.billed:
+        # Printing a hosted rate table over a run that calls no hosted provider
+        # makes a local sweep look priced. The operations still matter — they are
+        # what the run does — so they are reported without a currency column.
+        return [f"Cost preflight: $0.00 ({UNBILLED_NOTE}).", f"  local operations: {operations}"]
+    lines = ["Cost preflight (USD; rate assumptions per 1M tokens):"]
+    lines.extend(f"  {model}: ${rate:.4f}" for model, rate in MODEL_RATES_USD_PER_MILLION.items())
+    lines.append(
+        f"  {operations}; expected=${estimate.expected_usd:.4f}; "
+        f"upper bound=${estimate.upper_bound_usd:.4f}"
+    )
+    return lines
+
+
+def format_spend_summary(*, estimate: CostEstimate, actual_usd: float) -> str:
+    """Render measured spend, refusing to call a non-zero total unbilled."""
+    if not estimate.billed:
+        if actual_usd != 0.0:
+            raise CostAccountingError(
+                f"unbilled run measured ${actual_usd:.6f} of spend; the run called a "
+                "provider the preflight did not price"
+            )
+        return f"Cost summary: $0.00 ({UNBILLED_NOTE})."
+    return (
+        f"Cost summary: bound=${estimate.upper_bound_usd:.6f}; "
+        f"expected=${estimate.expected_usd:.6f}; actual=${actual_usd:.6f}"
     )
 
 
