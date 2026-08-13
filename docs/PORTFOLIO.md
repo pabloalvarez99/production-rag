@@ -12,11 +12,16 @@ true. That is why exactly one of them is complete.
 
 | # | Project | What it adds | State |
 | --- | --- | --- | --- |
-| **P1** | **[production-rag](../README.md)** — hybrid RAG service | Hybrid dense + sparse retrieval with RRF, cross-encoder rerank, grounded answers with resolvable citations, refusal as a first-class outcome, two-tier offline evaluation with paired statistics, server-rendered query UI | **complete**; one hosted baseline run outstanding |
+| **P1** | **[production-rag](../README.md)** — hybrid RAG service | Hybrid dense + sparse retrieval with RRF, cross-encoder rerank, grounded answers with resolvable citations, refusal as a first-class outcome, two-tier offline evaluation with paired statistics, server-rendered query UI | **done for portfolio purposes**; one hosted baseline run outstanding |
 | P2 | Agentic RAG research agent | Query planning, multi-step retrieval, tool use, and a stopping rule, over P1's retrieval core rather than a new one | planned — starts once P1's hosted baseline exists, so agent behaviour is measured against a known retrieval floor |
 | P3 | Multi-agent system | An orchestrator plus specialists, explicit handoff contracts, shared state, and failure containment between agents | planned — needs P2's single-agent trace and cost profile as its comparison baseline |
 | P4 | RepoMind code intelligence | Change-impact answers over a repository: which artefacts a change touches, with evidence, on a corpus and golden set of its own | scoped — three preconditions before any code, chief among them a corpus where BM25 and direct neighbours provably miss the answer |
 | P5 | Full production AI platform | The hardening deliberately excluded from P1: auth, rate limits, a metrics endpoint, payload filters, retry and timeout policy, load and concurrency work | planned — the crown project; it wraps P1 through P4 rather than replacing them |
+
+**P2 through P5 are plans, not work in progress.** No code exists for any of them, no
+repository is linked, and nothing on this page should be read as a partially built system.
+Each one is stated with the entry condition that has to be true before it starts, so the
+sequence can be checked rather than trusted. P1 is the only project with something to run.
 
 ## P1 — production-rag
 
@@ -25,10 +30,11 @@ detail in the [README](../README.md).
 
 ### Status
 
-Complete as an engineering artefact. Every milestone from scaffold through two-tier
-evaluation is landed on `main`, plus the adversarial corpus, the paired statistics, the query
-UI, and the publication path that renders the measurement artefact into the README and fails
-CI when the two disagree.
+**Done for portfolio purposes.** Every milestone from scaffold through two-tier evaluation
+is landed on `main`, plus the adversarial corpus, the paired statistics, the query UI, and
+the publication path that renders the measurement artefact into the README and fails CI when
+the two disagree. Nothing is queued for it, and the free path is public-ready: a reviewer
+clones it and reaches a cited answer without a credential.
 
 One thing is deliberately open: no hosted-provider baseline has been run, so the published
 scorecard is an explicitly labelled local-provider plumbing fixture rather than a quality

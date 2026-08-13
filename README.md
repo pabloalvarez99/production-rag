@@ -18,6 +18,11 @@ Each one has a stated position here, an ADR, and a test.
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 
+**Ship status: public-ready free path.** Clone, run, and review everything below without a
+credential; the one open item is a hosted-provider baseline run. How to run the checks and
+contribute: [CONTRIBUTING.md](CONTRIBUTING.md). How to report a vulnerability, and why no
+key belongs in an issue: [SECURITY.md](SECURITY.md).
+
 ## Try it free ($0, no API key)
 
 Every command in this section runs on deterministic local providers: no credential, no
@@ -292,6 +297,18 @@ Explicit non-goals for the current release:
 - No multi-tenant authorization or public-internet hardening.
 - No replacement for source review: citations provide provenance, not automatic truth.
 - No framework abstraction that hides the ingest, retrieval, or evaluation contracts.
+
+## Contributing and security
+
+[CONTRIBUTING.md](CONTRIBUTING.md) covers the free demo, the four checks CI runs
+(`ruff check .`, `mypy --strict`, `pytest -q`, `python tools/render_docs.py --check`), and
+the rules a change is reviewed against: claims match code, published numbers carry their
+provenance, and local-provider runs are never presented as quality results.
+
+[SECURITY.md](SECURITY.md) covers private vulnerability reporting and the credential rule —
+values live in `.env`, which is gitignored; `.env.example` is the committed template and
+holds names and shapes only. A key never belongs in an issue, a pull request, or a pasted
+log. If one is exposed, rotate it before anything else.
 
 ## License
 
