@@ -94,6 +94,13 @@ class QueryDebug(BaseModel):
         default_factory=list,
         description="Citation marker ordinals emitted by the model but not resolved.",
     )
+    cache: Literal["hit", "miss"] | None = Field(
+        default=None,
+        description=(
+            "Whether the in-process result cache answered this request. Only "
+            "present when the cache is enabled and debug is requested."
+        ),
+    )
 
 
 class QueryResponse(BaseModel):

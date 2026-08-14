@@ -45,8 +45,13 @@
       </div>
       <div class="actions">
         <button class="submit" type="submit">Run grounded query</button>
+        <label class="stream-toggle" for="stream">
+          <input type="checkbox" id="stream" name="stream" value="on"{% if stream_default %} checked{% endif %}>
+          <span>Stream the draft</span>
+        </label>
         <span id="querying" class="htmx-indicator" role="status">Looking for supporting evidence…</span>
       </div>
+      <p class="hint">Streaming shows the model's provisional text as it arrives. It is not the answer: the citation guardrail runs after the model finishes, so a draft is replaced by the grounded answer it supports — or by a refusal.</p>
     </form>
   </section>
 
@@ -59,11 +64,87 @@
     <nav aria-label="Service links">
       <a href="/docs">OpenAPI</a>
       <a href="/health">Health</a>
+      <a href="/evals">Scorecard</a>
       <a href="/openapi.json">Schema</a>
     </nav>
   </footer>
 
   <script>
+    // The streamed path is hand-written rather than delegated to htmx's SSE
+    // extension: that extension opens a GET EventSource, and this query is a
+    // POST with a body. Vendoring a second script to avoid twenty lines here
+    // would add an origin to audit for no behaviour that is not below.
+    var DRAFT_FRAGMENT = [
+      '<article class="outcome outcome-draft" data-outcome="drafting">',
+      '<p class="outcome-label">Draft · not verified</p>',
+      '<h2>The model is still writing</h2>',
+      '<p class="banner">Provisional text. Nothing here is an answer yet: the citation guardrail runs once the model has finished, and replaces this with the grounded answer it supports or with a refusal.</p>',
+      '<p class="answer draft-text"></p>',
+      '</article>'
+    ].join('');
+
+    function applyEvent(frame, region) {
+      var name = '';
+      var data = '';
+      frame.split('\n').forEach(function (line) {
+        if (line.indexOf('event: ') === 0) { name = line.slice(7); }
+        else if (line.indexOf('data: ') === 0) { data = line.slice(6); }
+      });
+      if (!name || !data) { return; }
+      var payload = JSON.parse(data);
+      if (name === 'delta') {
+        var draft = region.querySelector('.draft-text');
+        // textContent, never innerHTML: model output is not markup, and the one
+        // place it could become markup is the place it arrives unfinished.
+        if (draft) { draft.textContent += payload.text; }
+      } else if (name === 'result') {
+        region.innerHTML = payload.html;
+      }
+    }
+
+    async function runStreamedQuery(body, region) {
+      region.innerHTML = DRAFT_FRAGMENT;
+      var response = await fetch('/ui/query/stream', {
+        method: 'POST',
+        headers: {'content-type': 'application/x-www-form-urlencoded'},
+        body: body
+      });
+      var contentType = response.headers.get('content-type') || '';
+      if (contentType.indexOf('text/event-stream') === -1) {
+        // A rejection decided before the stream opened — a blank question or a
+        // filter outside the allowlist. It is a fragment and a status code.
+        region.innerHTML = await response.text();
+        return;
+      }
+      var reader = response.body.getReader();
+      var decoder = new TextDecoder();
+      var buffer = '';
+      for (;;) {
+        var piece = await reader.read();
+        if (piece.done) { break; }
+        buffer += decoder.decode(piece.value, {stream: true});
+        var frames = buffer.split('\n\n');
+        // The last element is whatever came after the final blank line: either
+        // empty, or half of an event still on the wire. It stays in the buffer.
+        buffer = frames.pop();
+        frames.forEach(function (frame) { applyEvent(frame, region); });
+      }
+    }
+
+    var queryForm = document.querySelector('.query-panel form');
+    var streamToggle = document.getElementById('stream');
+    if (queryForm && streamToggle) {
+      // Registered from an inline script, so it runs before the deferred htmx
+      // bundle attaches its own submit handler to this form. Stopping immediate
+      // propagation is therefore enough to take the request over.
+      queryForm.addEventListener('submit', function (event) {
+        if (!streamToggle.checked) { return; }
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        runStreamedQuery(new URLSearchParams(new FormData(queryForm)), document.getElementById('result'));
+      });
+    }
+
     var filterField = document.getElementById('filter-field');
     var filterValue = document.getElementById('filter-value');
     if (filterField && filterValue) {

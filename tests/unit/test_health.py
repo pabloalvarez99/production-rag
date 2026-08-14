@@ -38,7 +38,7 @@ def test_health_payload_shape(client: TestClient, path: str) -> None:
     assert payload == {
         "status": "ok",
         "service": "production-rag",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "environment": "local",
     }
 

@@ -68,6 +68,9 @@ services:
       HOST: 0.0.0.0
       PORT: "8000"
       CONFIG_PATH: /app/configs/default.yaml
+      # Local demo only: in-process filter-aware result cache (ADR-0013).
+      # Production-shaped deploys leave this unset/false.
+      CACHE_ENABLED: ${CACHE_ENABLED:-true}
       # Secrets are never written here. They come from .env (gitignored),
       # which Compose loads automatically from the project root.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -82,6 +85,7 @@ services:
       # Read-only mounts so config and corpora can change without a rebuild.
       - ./configs:/app/configs:ro
       - ./data:/app/data:ro
+      - ./docs/assets:/app/docs/assets:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 15s

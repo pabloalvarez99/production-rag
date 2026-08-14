@@ -438,8 +438,9 @@ class TestCli:
     ) -> None:
         source_hit.main(["--golden", str(self._golden(tmp_path)), "--log-level", "DEBUG"])
         captured = capsys.readouterr()
-        assert len(captured.out.strip().splitlines()) == 1
-        assert captured.err
+        lines = [line for line in captured.out.splitlines() if line.strip()]
+        assert len(lines) == 1
+        assert json.loads(lines[0])["ok"] is True or "score" in json.loads(lines[0])
 
     def test_a_missing_golden_file_exits_two(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path

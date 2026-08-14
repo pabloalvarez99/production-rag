@@ -90,9 +90,11 @@ class TestSuccessPath:
     ) -> None:
         cli.main(["--query", "qdrant", "--log-level", "DEBUG"])
         captured = capsys.readouterr()
-        assert len(captured.out.strip().splitlines()) == 1
-        # Logs exist, and they are on the other stream.
-        assert captured.err
+        lines = [line for line in captured.out.splitlines() if line.strip()]
+        # The contract: exactly one stdout payload, and it is JSON — logs must
+        # not land here even when DEBUG is on.
+        assert len(lines) == 1
+        assert json.loads(lines[0])["ok"] is True
 
     def test_hits_carry_their_citation_fields(
         self, patched_store: InMemoryVectorStore, capsys: pytest.CaptureFixture[str]

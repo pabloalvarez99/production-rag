@@ -82,15 +82,19 @@ deterministic embedder, and serves the UI. Open <http://localhost:8000/>.
 
 ### Ask, in this order
 
-1. **"Why does hybrid search use reciprocal rank fusion?"**
-2. **"Who won the Antarctic underwater chess championship?"**
+1. **"Why does hybrid search use reciprocal rank fusion?"** — leave **Stream the draft**
+   off the first time, then re-ask with the stream toggle on.
+2. **"Who won the Antarctic underwater chess championship?"** — with stream on, so the
+   draft is replaced by a refusal.
 3. **"How does filtering work in Qdrant?"** — twice. Once unfiltered, then again with the
-   **metadata filter** set to `title` = `Filtering`.
+   **metadata filter** set to `title` = `Filtering` (the committed capture is titled
+   **Filtering** for this beat).
 
 The order carries the argument. A refusal shown first reads as a system that cannot
-answer; a refusal shown second reads as a system that chose not to. The third pair is one
-question asked twice, so the reviewer sees the narrowing change which documents the
-citations come from rather than taking the filter on trust.
+answer; a refusal shown second reads as a system that chose not to. The filter pair is
+one question asked twice, so the reviewer sees the narrowing change which documents the
+citations come from rather than taking the filter on trust. The stream beat is the same
+contract with the wait made visible: provisional text is never the answer.
 
 ### What the reviewer must see
 
@@ -98,15 +102,22 @@ citations come from rather than taking the filter on trust.
   footer — the UI route pins the fake embedder and fake LLM, so no key is read.
 - On the first question: an answer, citation markers, and the **source passages behind
   them**. Click a marker. It resolves to the exact chunk that was in the prompt context.
+- **Stream beat:** with the toggle on, provisional draft text appears under a **Draft ·
+  not verified** banner, then is replaced by the grounded fragment (or a refusal). Say
+  aloud: deltas are not the answer; the citation guardrail runs after the model finishes.
+  `POST /v1/query` remains the contract; `POST /v1/query/stream` is additive.
 - Expand **Pipeline timings** and name the nodes aloud: retrieve, rerank, generate,
   validate citations, guardrails.
 - On the second question: an explicit **refusal that states its reason**, with no
-  invented supporting text.
+  invented supporting text — including when stream was on (the draft must not remain on
+  screen as if it were the answer).
 - On the filtered run: every citation from `qdrant/search/filtering.md`, and a
   **Filtered: title = Filtering** chip in the result footer — an answer that was narrowed
   never reads as an answer over the whole corpus. The field list in the control is the
   deployment's allowlist, read from configuration; there is nothing outside it to pick,
   and a field posted by hand is answered 422 with `filter_not_allowed`, never dropped.
+  (`source=sample` does **not** narrow the sample corpus: every sample point is
+  `source=root` / corpus path layout — hence the demo chip uses **title=Filtering**.)
 
 ### Say this
 

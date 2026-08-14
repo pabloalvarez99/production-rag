@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "production-rag"
-version = "0.1.0"
+version = "0.2.0"
 description = "Production-grade RAG service with hybrid retrieval, cross-encoder reranking, grounded citations, and a two-tier offline evaluation harness."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -95,6 +95,7 @@ rerank-cohere = [
 obs = [
     "langfuse>=2.53",
     "opentelemetry-api>=1.28",
+    "opentelemetry-sdk>=1.28",
 ]
 # Ragas returns as a real dependency if and when an optional adapter is built
 # behind RUN_LLM_EVALS=1, not before.

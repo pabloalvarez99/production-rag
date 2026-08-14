@@ -298,6 +298,43 @@ class OTelTracer:
         """No-op: flushing a provider the host owns is the host's call."""
 
 
+def configure_otel_console_exporter(*, force: bool = False) -> bool:
+    """Attach a console span exporter when ``PRAG_OTEL_CONSOLE`` is set.
+
+    Default is off. CI never sets the flag, so the suite stays silent. When on,
+    spans print to stderr through the OpenTelemetry SDK's console exporter —
+    useful on a laptop, never a production sink.
+
+    Returns:
+        ``True`` when a console exporter was attached, ``False`` otherwise
+        (flag off, or the SDK extra is not installed).
+    """
+    import os
+
+    if not force:
+        flag = os.environ.get("PRAG_OTEL_CONSOLE", "").strip().lower()
+        if flag not in {"1", "true", "yes", "on"}:
+            return False
+    try:
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
+    except ImportError:
+        _log.warning(
+            "tracing_sdk_missing",
+            provider="otel-console",
+            extra="obs",
+            hint="pip install 'production-rag[obs]'",
+        )
+        return False
+
+    tracer_provider = TracerProvider()
+    tracer_provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
+    trace.set_tracer_provider(tracer_provider)
+    _log.info("otel_console_exporter_attached")
+    return True
+
+
 def build_otel_tracer() -> Tracer:
     """Return an OpenTelemetry tracer, or the null tracer if OTel is absent.
 
@@ -311,6 +348,8 @@ def build_otel_tracer() -> Tracer:
         _log.warning("tracing_sdk_missing", provider="otel", extra="obs", using="null")
         return NullTracer()
 
+    # Optional console export: env flag only, never on by default, never in CI.
+    configure_otel_console_exporter()
     return OTelTracer(trace.get_tracer(INSTRUMENTATION_NAME))
 
 

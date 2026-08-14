@@ -51,6 +51,12 @@ input::placeholder { color: var(--muted); }
 .outcome-empty { border-left-color: var(--blue); }
 .outcome-empty .outcome-label { color: var(--blue); }
 .outcome-empty .banner { border-color: var(--blue); }
+.outcome-draft { border-left-color: var(--edge); background: #0d1512; }
+.outcome-draft .outcome-label { color: var(--muted); }
+.outcome-draft .banner { border-color: var(--edge); }
+.outcome-draft .draft-text { color: var(--muted); font-style: italic; min-height: 1.5rem; }
+.stream-toggle { display: inline-flex; align-items: center; gap: .4rem; color: var(--muted); font-size: .9rem; }
+.stream-toggle input { accent-color: var(--green); }
 .banner { margin: 0 0 1rem; padding: .8rem 1rem; border: 1px solid var(--line); border-left-width: 4px; border-radius: 10px; background: #0006; }
 .answer { font-size: 1.18rem; white-space: pre-wrap; }
 .citation-marker { color: var(--green); font-weight: 800; text-decoration-thickness: 2px; text-underline-offset: 2px; }

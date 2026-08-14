@@ -16,7 +16,7 @@ SettingsFactory = Callable[..., Settings]
 def test_defaults(settings: Settings) -> None:
     """Defaults are a runnable local configuration with no credentials."""
     assert settings.app_name == "production-rag"
-    assert settings.app_version == "0.1.0"
+    assert settings.app_version == "0.2.0"
     assert settings.environment == "local"
     assert settings.log_level == "INFO"
     assert settings.api_prefix == "/v1"

@@ -44,7 +44,7 @@ class Settings(BaseSettings):
 
     # --- application identity -------------------------------------------------
     app_name: str = "production-rag"
-    app_version: str = "0.1.0"
+    app_version: str = "0.2.0"
     environment: str = "local"
     log_level: str = "INFO"
     api_prefix: str = "/v1"
@@ -70,6 +70,15 @@ class Settings(BaseSettings):
     # value here keeps the container contract explicit instead of silently
     # dropping it via ``extra="ignore"``.
     config_path: str | None = None
+
+    # --- optional result cache ------------------------------------------------
+    # Env override for the YAML ``cache.enabled`` flag. Compose sets this true
+    # for the local demo; production-shaped deploys leave it false.
+    cache_enabled: bool = False
+
+    # Optional OpenTelemetry console exporter. Off by default; when true and the
+    # ``obs`` extra is installed, span output goes to stderr. CI never sets this.
+    prag_otel_console: bool = False
 
     # --- credentials ----------------------------------------------------------
     # Never logged, never echoed in a response. Absent by default so the whole

@@ -299,9 +299,24 @@ generation:
   max_context_tokens: 6000
   timeout_seconds: 60
   max_retries: 3
-  # A true flag for behaviour that does not exist is the same failure class as
-  # presenting a DECLARED block as live. The query path returns whole answers.
+  # LIVE since M7. `POST /v1/query` still returns whole answers and is still the
+  # contract; `POST /v1/query/stream` delivers the same answer in pieces and is
+  # always mounted, because a route that comes and goes with a profile is one no
+  # client can be written against. This flag only decides whether the demo form
+  # starts with its stream toggle on. Off by default: the first thing a reviewer
+  # sees should be the plain path the API documentation describes. See
+  # docs/adr/0012-streamed-answers.md.
   stream: false
+
+# ---------------------------------------------------------------------------
+# Query result cache — optional in-process reuse of identical free-path answers.
+# status: LIVE (M7). Off in this production-shaped profile. The local compose
+# demo enables it with CACHE_ENABLED=true. Filters are part of the key so a
+# filtered answer can never serve an unfiltered query (ADR-0013).
+# ---------------------------------------------------------------------------
+cache:
+  enabled: false
+  max_entries: 256
   # Note there is deliberately no `fail_open` here, unlike the rerank block. A
   # failed reranker leaves a result that is correct in kind and ordered worse; a
   # failed generator leaves nothing to substitute except an ungrounded answer,
