@@ -138,6 +138,7 @@ and does not prove.
 | Refusal as a first-class response outcome | **LIVE** | `generation/guardrails.py`; insufficient evidence never invents support |
 | Allowlisted metadata filters, failing closed | **LIVE** | `retrieval/filters.py`; a field outside `retrieval.filters.allowed_fields` is a typed 422, never a silently widened answer |
 | Server-rendered query UI | **LIVE** | `api/routes/ui.py` and htmx; pins the local embedder and generator, so the UI cannot bill |
+| Metadata filter control on the UI | **LIVE** | `templates/index.html`; the field list is the deployment allowlist read from configuration, and a rejected filter renders the same typed 422 the API answers |
 | Health, readiness, request ids, structured logs | **LIVE** | `/health`, `/v1/ready`, middleware, caller-controlled safe diagnostics |
 | Tracing seam | **LIVE** | Null tracer by default; Langfuse is opt-in |
 | Two-tier evaluation with paired statistics | **LIVE** | `evals/run.py`, `evals/matrix.py`, `evals/stats.py`; `--fail-under-hit` reports by default |

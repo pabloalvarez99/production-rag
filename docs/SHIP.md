@@ -25,6 +25,11 @@ Open <http://localhost:8000/> and ask two questions:
 - *Who won the Antarctic underwater chess championship?* — an explicit refusal with its
   reason, because the corpus does not support an answer.
 
+Then re-run the first question with the **metadata filter** control set to `source` =
+`sample`. The result footer names the narrowing it was answered under. The fields offered
+are the deployment's allowlist, read from the same configuration the API enforces; a field
+outside it is answered 422 with `filter_not_allowed` rather than quietly ignored.
+
 `docker compose down` stops the stack and keeps the vector volume. The rest of the
 credential-free path — ingest, the query API and CLI, both evaluation tiers, and regenerating
 the scorecard — is in [Try it free](../README.md#try-it-free-0-no-api-key).
@@ -54,7 +59,8 @@ check as well.
 Ingest with citable chunk payloads · dense + sparse retrieval fused with RRF · cross-encoder
 reranking that degrades ordering rather than availability · grounded answers whose `[n]`
 markers resolve to source records · refusal as a first-class outcome · a server-rendered query
-UI pinned to the local providers · health, readiness, request ids and structured logs · a
+UI pinned to the local providers, with an allowlisted metadata filter control · allowlisted
+metadata filters on every query path, fail closed · health, readiness, request ids and structured logs · a
 tracing seam that is off by default · two evaluation tiers with paired statistics · scorecard
 publication that fails closed.
 

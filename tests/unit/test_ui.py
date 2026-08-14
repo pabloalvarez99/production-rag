@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from production_rag.api.routes import query as query_route
 from production_rag.api.schemas import CitationOut, QueryDebug, QueryRequest, QueryResponse
 from production_rag.config import Settings
+from production_rag.retrieval.filters import FILTER_NOT_ALLOWED, FilterError
 
 SettingsFactory = Callable[..., Settings]
 _ORIGIN = re.compile(r"https?://[^\"'\s)<]+")
@@ -146,6 +147,114 @@ def test_missing_collection_renders_recovery_command(client: TestClient) -> None
     assert 'data-outcome="empty-store"' in response.text
     assert "--embedder fake" in response.text
     assert "Traceback" not in response.text
+
+
+def test_form_offers_only_allowlisted_filter_fields(client: TestClient) -> None:
+    """The control is built from configuration, not from a hand-written list."""
+    page = client.get("/").text
+
+    assert 'name="filter_field"' in page
+    assert '<option value="source">' in page
+    assert '<option value="title">' in page
+    assert '<option value="tags">' in page
+    assert '<option value="">No filter</option>' in page
+    # Removed from the allowlist in M7: no ingest payload ever carried the key.
+    assert '<option value="created_at">' not in page
+    assert '<option value="source_path">' not in page
+
+
+def test_filter_reaches_the_query_executor(client: TestClient) -> None:
+    executor = FakeExecutor(response=_grounded())
+    _override(client, executor)
+
+    response = client.post(
+        "/ui/query",
+        data={"question": "Why use RRF?", "filter_field": "source", "filter_value": "sample"},
+    )
+
+    assert response.status_code == 200
+    assert 'data-outcome="grounded"' in response.text
+    assert executor.payload is not None
+    assert executor.payload.filters == {"source": "sample"}
+    # The answer names the narrowing it was produced under.
+    assert 'data-filter="source = sample"' in response.text
+
+
+def test_unfiltered_submission_is_unchanged(client: TestClient) -> None:
+    """An unselected field calls the executor exactly as it was called before."""
+    executor = FakeExecutor(response=_grounded())
+    _override(client, executor)
+
+    response = client.post(
+        "/ui/query",
+        data={"question": "Why use RRF?", "filter_field": "", "filter_value": "ignored"},
+    )
+
+    assert response.status_code == 200
+    assert executor.payload is not None
+    assert executor.payload.filters is None
+    assert "data-filter=" not in response.text
+
+
+def test_unknown_filter_field_is_a_typed_422(client: TestClient) -> None:
+    executor = FakeExecutor(response=_grounded())
+    _override(client, executor)
+
+    response = client.post(
+        "/ui/query",
+        data={
+            "question": "Why use RRF?",
+            "filter_field": "source_path",
+            "filter_value": "sample/hybrid.md",
+        },
+    )
+
+    assert response.status_code == 422
+    assert 'data-outcome="invalid-filter"' in response.text
+    assert "filter_not_allowed" in response.text
+    assert "source_path" in response.text
+    # Rejected before anything ran, and rendered as a fragment, not a stack trace.
+    assert executor.payload is None
+    assert "Traceback" not in response.text
+
+
+def test_allowlisted_field_with_no_value_is_rejected(client: TestClient) -> None:
+    """An empty value matches nothing, which reads as a corpus gap. Refuse it."""
+    executor = FakeExecutor(response=_grounded())
+    _override(client, executor)
+
+    response = client.post(
+        "/ui/query",
+        data={"question": "Why use RRF?", "filter_field": "tags", "filter_value": "   "},
+    )
+
+    assert response.status_code == 422
+    assert 'data-outcome="invalid-filter"' in response.text
+    assert "filter_invalid_value" in response.text
+    assert executor.payload is None
+
+
+def test_filter_rejected_by_the_pipeline_is_not_a_service_failure(client: TestClient) -> None:
+    """The executor is the second gate; its rejection keeps the typed rendering."""
+    _override(
+        client,
+        FakeExecutor(
+            error=FilterError(
+                "filtering on 'author' is not allowed",
+                error_type=FILTER_NOT_ALLOWED,
+                field="author",
+            )
+        ),
+    )
+
+    response = client.post(
+        "/ui/query",
+        data={"question": "Why use RRF?", "filter_field": "source", "filter_value": "sample"},
+    )
+
+    assert response.status_code == 422
+    assert 'data-outcome="invalid-filter"' in response.text
+    assert 'data-outcome="error"' not in response.text
 
 
 def test_static_assets_are_local_and_served(client: TestClient) -> None:

@@ -84,9 +84,12 @@ deterministic embedder, and serves the UI. Open <http://localhost:8000/>.
 
 1. **"Why does hybrid search use reciprocal rank fusion?"**
 2. **"Who won the Antarctic underwater chess championship?"**
+3. The first question again, with the **metadata filter** set to `source` = `sample`.
 
 The order carries the argument. A refusal shown first reads as a system that cannot
-answer; a refusal shown second reads as a system that chose not to.
+answer; a refusal shown second reads as a system that chose not to. The third run is the
+same question under a narrowing, so the reviewer compares two answers rather than
+taking the filter on trust.
 
 ### What the reviewer must see
 
@@ -98,6 +101,11 @@ answer; a refusal shown second reads as a system that chose not to.
   validate citations, guardrails.
 - On the second question: an explicit **refusal that states its reason**, with no
   invented supporting text.
+- On the third run: a **Filtered: source = sample** chip in the result footer, so the
+  answer names the narrowing it was produced under. The field list in the control is the
+  deployment's allowlist, read from configuration — pick nothing outside it, because there
+  is nothing outside it to pick. A field posted by hand is answered 422 with
+  `filter_not_allowed`, never dropped.
 
 ### Say this
 

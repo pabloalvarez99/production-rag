@@ -20,6 +20,12 @@
     <p class="banner">The system searched the corpus, found no supporting evidence, and declined to answer.</p>
     <p class="answer">{{ result.answer }}</p>
     {% if result.refusal_reason %}<p class="reason"><span class="reason-key">Reason</span> {{ result.refusal_reason }}</p>{% endif %}
+{% elif state == "invalid-filter" %}
+  <article class="outcome outcome-refused" data-outcome="invalid-filter">
+    <p class="outcome-label">Filter rejected</p>
+    <h2>The query was not run</h2>
+    <p class="banner">{{ message }}</p>
+    <p class="hint">The same rejection <code>POST /v1/query</code> answers with: HTTP 422 and <code>error_type</code> <code>{{ error_type }}</code>. A filter this deployment does not allow is refused, never silently dropped — a dropped filter would answer a different question than the one asked.</p>
 {% elif state == "empty" %}
   <article class="outcome outcome-empty" data-outcome="empty-store">
     <p class="outcome-label">Corpus unavailable</p>
@@ -38,6 +44,7 @@
     <footer class="diagnostics">
       <span>Request <code>{{ request_id }}</code></span>
       <span class="chip">Demo mode (free / deterministic)</span>
+      {% if applied_filter %}<span class="chip chip-filter" data-filter="{{ applied_filter }}">Filtered: {{ applied_filter }}</span>{% endif %}
       {% if result and result.debug and result.debug.timings_ms %}
         <details>
           <summary>Pipeline timings</summary>
