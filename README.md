@@ -338,4 +338,8 @@ provenance, and local-provider runs are never presented as quality results.
 [SECURITY.md](SECURITY.md) covers private vulnerability reporting and the credential rule —
 values live in `.env`, which is gitignored; `.env.example` is the committed template and
 holds names and shapes only. A key never belongs in an issue, a pull request, or a pasted
-log. If one is exposed, rotate it before anything else
+log. If one is exposed, rotate it before anything else.
+
+## License
+
+[MIT](LICENSE) © 2026 Pablo Figueroa.
