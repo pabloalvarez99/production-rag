@@ -27,6 +27,7 @@ from production_rag.ingest.cli import (
     configure_cli_logging,
 )
 from production_rag.retrieval.embeddings import EMBEDDER_KINDS, FAKE_EMBEDDER
+from production_rag.retrieval.filters import FilterError, parse_filter_arguments
 from production_rag.retrieval.hybrid import RETRIEVAL_MODES
 from production_rag.retrieval.rerank import RERANK_KINDS
 
@@ -70,6 +71,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--filter",
+        dest="filters",
+        action="append",
+        metavar="FIELD=VALUE",
+        help=(
+            "Metadata filter, repeatable. Only fields in retrieval.filters.allowed_fields "
+            "are accepted. Repeating a field means 'any of'; different fields are AND."
+        ),
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Include safe pipeline diagnostics in the JSON response.",
@@ -102,13 +113,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_cli_logging(args.log_level or settings.log_level)
 
     try:
+        # Widened on purpose: the request schema also accepts a bare string per
+        # field, and `dict[str, list[str]]` is not a subtype of that dict.
+        filters: dict[str, str | list[str]] = dict(parse_filter_arguments(args.filters))
         payload = QueryRequest(
             question=args.question,
             mode=args.mode,
             rerank=args.rerank,
             llm=args.llm,
+            filters=filters or None,
             debug=args.debug,
         )
+    except FilterError as exc:
+        return _fail(str(exc), exc.error_type, EXIT_USAGE)
     except ValidationError as exc:
         return _fail("invalid query arguments", type(exc).__name__, EXIT_USAGE)
 
@@ -119,6 +136,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             request_id=str(uuid4()),
             embedder_kind=args.embedder,
         )
+    except FilterError as exc:
+        # A field outside the allowlist. Same slug as the HTTP 422 body, and the
+        # same graded meaning as any other bad invocation: nothing was retrieved.
+        return _fail(str(exc), exc.error_type, EXIT_USAGE)
     except QueryPipelineUnavailableError as exc:
         return _fail(str(exc), type(exc).__name__, EXIT_RUNTIME)
     except Exception as exc:  # noqa: BLE001 - CLI must preserve the last-line JSON contract

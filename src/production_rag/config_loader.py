@@ -216,9 +216,19 @@ class FusionConfig(_Section):
 
 
 class FiltersConfig(_Section):
-    """Metadata fields a query is allowed to filter on, as an allowlist."""
+    """Metadata fields a query is allowed to filter on, as an allowlist.
 
-    allowed_fields: tuple[str, ...] = ("source", "title", "tags", "created_at")
+    Live from M7: ``POST /v1/query`` and both CLIs accept a ``filters`` object and
+    a field outside this list is rejected, never dropped. The enforcement itself
+    is in :mod:`production_rag.retrieval.filters`; this block is only the list.
+
+    ``created_at`` was in this default until M7 and is gone. Nothing in the ingest
+    payload ever wrote it, so it could only ever have matched nothing — an
+    allowlisted field that always returns an empty result is worse than an absent
+    one, because the empty result looks like a corpus gap.
+    """
+
+    allowed_fields: tuple[str, ...] = ("source", "title", "tags")
 
 
 class RetrievalConfig(_Section):

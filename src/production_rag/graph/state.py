@@ -59,6 +59,10 @@ class QueryState(BaseModel):
     query: str
     mode: str | None = None
     top_k: int | None = None
+    # The caller's metadata narrowing, still raw. Validation belongs to the
+    # retriever's filter policy, which owns the allowlist; carrying a validated
+    # object here would put a retrieval type into the graph state for no gain.
+    filters: dict[str, Any] | None = None
 
     # --- retrieval --------------------------------------------------------
     hits: tuple[RetrievalHit, ...] = ()

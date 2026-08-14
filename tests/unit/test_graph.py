@@ -37,6 +37,11 @@ from production_rag.graph.state import (
 from production_rag.ingest.models import Chunk, Document
 from production_rag.query_pipeline import build_query_pipeline, run_query
 from production_rag.retrieval.embeddings import FakeEmbeddingProvider
+from production_rag.retrieval.filters import (
+    FILTER_NOT_ALLOWED,
+    NO_FILTER_SUMMARY,
+    FilterError,
+)
 from production_rag.retrieval.hybrid import Retriever
 from production_rag.retrieval.rerank import FakeReranker
 from production_rag.retrieval.sparse import Bm25Encoder
@@ -188,6 +193,51 @@ class TestRetrievalOptions:
 
         with pytest.raises(RetrievalError):
             run_query("q", retriever=_retriever(), llm=FakeLLM(), mode="magic")
+
+    def test_a_filter_narrows_what_the_answer_may_cite(self) -> None:
+        """The whole point of the feature, asserted end to end.
+
+        Generation can only cite what retrieval returned, so a filter that
+        narrows the hit set narrows the evidence — which is why a silently
+        dropped filter would produce a confidently wrong answer.
+        """
+        result = run_query(
+            "qdrant vectors",
+            retriever=_retriever(),
+            llm=FakeLLM(),
+            filters={"title": "sample/01-qdrant.md"},
+        )
+        assert {citation.source_path for citation in result.citations} == {"sample/01-qdrant.md"}
+
+    def test_the_result_records_the_filter_that_was_applied(self) -> None:
+        result = run_query(
+            "qdrant vectors",
+            retriever=_retriever(),
+            llm=FakeLLM(),
+            filters={"title": "sample/01-qdrant.md"},
+        )
+        assert result.filters is not None
+        assert result.filters["fields"] == ["title"]
+        # This retriever was built without the qdrant block, so no field is known
+        # to be indexed. The cost is named on the result either way, rather than
+        # left as unexplained latency.
+        assert result.filters["unindexed"] == ["title"]
+
+    def test_no_filter_is_the_previous_behaviour(self) -> None:
+        result = run_query("qdrant vectors", retriever=_retriever(), llm=FakeLLM())
+        assert result.filters is None
+        assert result.to_dict()["filters"] == NO_FILTER_SUMMARY
+
+    def test_a_field_outside_the_allowlist_is_an_error_not_a_refusal(self) -> None:
+        """A rejected filter is a client mistake; answering it anyway would be worse."""
+        with pytest.raises(FilterError) as excinfo:
+            run_query(
+                "qdrant vectors",
+                retriever=_retriever(),
+                llm=FakeLLM(),
+                filters={"author": "pablo"},
+            )
+        assert excinfo.value.error_type == FILTER_NOT_ALLOWED
 
 
 class TestRerankNode:

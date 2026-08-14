@@ -87,12 +87,19 @@ def test_absent_features_are_only_mentioned_honestly() -> None:
 
 
 def test_closing_claim_predicates_match_the_implemented_surface() -> None:
-    """Mutation baseline: none of these five optional surfaces is implemented."""
+    """Mutation baseline for the five optional surfaces.
+
+    ``retrieval filters`` flipped to ``True`` in M7: ``allowed_fields`` is read by
+    :mod:`production_rag.retrieval.filters` and enforced on every query path, so
+    the README may now describe filters without an honesty marker. The other four
+    stay ``False`` — that is what keeps this a baseline rather than a rubber
+    stamp, and what makes an accidental flip visible in a diff.
+    """
     assert {claim.name: claim.exists for claim in CLAIMS} == {
         "LlamaIndex": False,
         "Ragas": False,
         "streaming": False,
-        "retrieval filters": False,
+        "retrieval filters": True,
         "/metrics": False,
     }
 

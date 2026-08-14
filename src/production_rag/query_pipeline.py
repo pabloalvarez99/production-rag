@@ -26,6 +26,7 @@ HTTP layer loses nothing.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,6 +40,7 @@ from production_rag.graph.nodes import QueryDeps
 from production_rag.graph.state import QueryState
 from production_rag.observability.context import request_context
 from production_rag.observability.tracer import Tracer, build_tracer, guarded_span
+from production_rag.retrieval.filters import NO_FILTER_SUMMARY
 from production_rag.retrieval.hybrid import NO_RERANK_SUMMARY, Retriever
 from production_rag.retrieval.rerank import Reranker
 
@@ -75,6 +77,11 @@ class QueryResult:
     collection: str = ""
     embedded_model: str = ""
     rerank: dict[str, Any] | None = None
+    filters: dict[str, Any] | None = None
+    """What metadata filter was in force, if any. On the result for the same
+    reason as ``rerank``: a hit count measured under a filter is not comparable
+    with one measured without it, and an eval row that cannot tell them apart is
+    an eval row that will be misread."""
     invalid_markers: tuple[int, ...] = ()
     uncited_claims: tuple[str, ...] = ()
     timings_ms: dict[str, float] | None = None
@@ -107,6 +114,7 @@ class QueryResult:
             "collection": self.collection,
             "embedded_model": self.embedded_model,
             "rerank": self.rerank if self.rerank is not None else NO_RERANK_SUMMARY,
+            "filters": self.filters if self.filters is not None else NO_FILTER_SUMMARY,
             "invalid_markers": list(self.invalid_markers),
             "uncited_claims": list(self.uncited_claims),
             "latency_ms": dict(self.timings_ms or {}),
@@ -134,6 +142,7 @@ class QueryPipeline:
         *,
         mode: str | None = None,
         top_k: int | None = None,
+        filters: Mapping[str, Any] | None = None,
         request_id: str | None = None,
     ) -> QueryResult:
         """Answer *query*.
@@ -143,6 +152,10 @@ class QueryPipeline:
             mode: ``dense``, ``sparse`` or ``hybrid``. Defaults to the configured
                 mode, which is ``hybrid``.
             top_k: Chunks to retrieve. Defaults to ``retrieval.top_k``.
+            filters: Metadata narrowing, validated against
+                ``retrieval.filters.allowed_fields`` by the retriever. An
+                unknown field raises :class:`~production_rag.retrieval.filters.FilterError`
+                before anything is retrieved or generated.
             request_id: The caller's correlation id — the one the HTTP layer
                 already put in its access log and its response header. One is
                 minted when absent, so a CLI or a notebook is correlatable too.
@@ -157,6 +170,9 @@ class QueryPipeline:
 
         Raises:
             RetrievalError: The query is empty, or the mode is unknown.
+            FilterError: A requested filter field is not allowlisted, or its
+                value is not expressible. A rejected filter costs nothing: it is
+                caught before the embedding call.
             EmbeddingError: The embedding provider failed.
             VectorStoreError: The store could not be queried.
             LLMError: The generation provider failed. Distinct from a refusal on
@@ -167,7 +183,15 @@ class QueryPipeline:
         with request_context(request_id) as bound_id:
             try:
                 with guarded_span(self._deps.tracer, QUERY_SPAN, request_id=bound_id):
-                    state = run_graph(self._graph, QueryState(query=query, mode=mode, top_k=top_k))
+                    state = run_graph(
+                        self._graph,
+                        QueryState(
+                            query=query,
+                            mode=mode,
+                            top_k=top_k,
+                            filters=dict(filters) if filters else None,
+                        ),
+                    )
             finally:
                 # Also on the failure path: a request that raised is the one whose
                 # trace is worth having, and a short-lived process may exit before
@@ -225,6 +249,7 @@ def run_query(
     config: YamlConfig | None = None,
     mode: str | None = None,
     top_k: int | None = None,
+    filters: Mapping[str, Any] | None = None,
     reranker: Reranker | None = None,
     system_prompt: str | None = None,
     tracer: Tracer | None = None,
@@ -247,7 +272,9 @@ def run_query(
         system_prompt=system_prompt,
         tracer=tracer,
     )
-    return pipeline.run(query, mode=mode, top_k=top_k, request_id=request_id)
+    return pipeline.run(
+        query, mode=mode, top_k=top_k, filters=filters, request_id=request_id
+    )
 
 
 def _flush(tracer: Tracer) -> None:
@@ -275,6 +302,11 @@ def _to_result(state: QueryState, *, request_id: str = "") -> QueryResult:
         collection=retrieval.collection if retrieval else "",
         embedded_model=retrieval.embedded_model if retrieval else "",
         rerank=retrieval.rerank.as_dict() if retrieval and retrieval.rerank else None,
+        filters=(
+            retrieval.query_filter.to_summary()
+            if retrieval and retrieval.query_filter
+            else None
+        ),
         invalid_markers=generation.invalid_markers if generation else (),
         uncited_claims=generation.uncited_claims if generation else (),
         timings_ms=dict(state.timings_ms),

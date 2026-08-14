@@ -91,7 +91,12 @@ class _Stopwatch:
 def retrieve_node(state: QueryState, deps: QueryDeps) -> dict[str, object]:
     """Run hybrid retrieval for the query."""
     with _Stopwatch() as timer:
-        result = deps.retriever.retrieve(state.query, mode=state.mode, top_k=state.top_k)
+        result = deps.retriever.retrieve(
+            state.query,
+            mode=state.mode,
+            top_k=state.top_k,
+            filters=state.filters,
+        )
     return {
         "retrieval": result,
         "hits": result.hits,

@@ -32,6 +32,7 @@ from qdrant_client import QdrantClient, models
 
 from production_rag.config_loader import HnswConfig, PayloadIndexConfig
 from production_rag.ingest.models import Chunk
+from production_rag.retrieval.filters import QueryFilter
 from production_rag.retrieval.sparse import SparseVector
 
 _log = structlog.get_logger(__name__)
@@ -139,14 +140,50 @@ class SearchableVectorStore(VectorStore, Protocol):
     """
 
     def search_dense(
-        self, vector: Sequence[float], *, limit: int, with_payload: Sequence[str] | None = None
+        self,
+        vector: Sequence[float],
+        *,
+        limit: int,
+        with_payload: Sequence[str] | None = None,
+        query_filter: QueryFilter | None = None,
     ) -> list[SearchHit]:
         """Nearest neighbours of *vector* under the dense named vector."""
 
     def search_sparse(
-        self, vector: SparseVector, *, limit: int, with_payload: Sequence[str] | None = None
+        self,
+        vector: SparseVector,
+        *,
+        limit: int,
+        with_payload: Sequence[str] | None = None,
+        query_filter: QueryFilter | None = None,
     ) -> list[SearchHit]:
         """Highest BM25 dot products against the sparse named vector."""
+
+
+def to_qdrant_filter(query_filter: QueryFilter | None) -> models.Filter | None:
+    """Translate a validated :class:`QueryFilter` into a Qdrant expression.
+
+    The only place in the project that turns the project-owned filter model into
+    a client type, which is what keeps :mod:`production_rag.retrieval.filters`
+    importable without Qdrant and unit-testable offline.
+
+    Conditions are AND-ed (``must``); the alternatives within one condition are
+    OR-ed by ``MatchAny``. ``MatchAny`` is also correct for a list-valued payload
+    such as ``tags``: Qdrant indexes each element, so the condition holds when any
+    element matches — the same rule :meth:`FilterCondition.matches` applies
+    offline.
+    """
+    if query_filter is None or query_filter.is_empty:
+        return None
+    return models.Filter(
+        must=[
+            models.FieldCondition(
+                key=condition.payload_key,
+                match=models.MatchAny(any=list(condition.values)),
+            )
+            for condition in query_filter.conditions
+        ]
+    )
 
 
 def _build_points(
@@ -430,7 +467,12 @@ class QdrantStore:
             ) from exc
 
     def search_dense(
-        self, vector: Sequence[float], *, limit: int, with_payload: Sequence[str] | None = None
+        self,
+        vector: Sequence[float],
+        *,
+        limit: int,
+        with_payload: Sequence[str] | None = None,
+        query_filter: QueryFilter | None = None,
     ) -> list[SearchHit]:
         """Nearest neighbours under the ``dense`` named vector.
 
@@ -441,6 +483,9 @@ class QdrantStore:
             with_payload: Payload fields to fetch. ``None`` fetches all; naming
                 the fields keeps the response small on a corpus whose payload
                 carries the full chunk text.
+            query_filter: Validated metadata filter, applied by Qdrant *before*
+                the ANN search, so ``limit`` counts matching points rather than
+                being trimmed to them afterwards.
 
         Returns:
             Hits ordered by cosine similarity, descending.
@@ -448,10 +493,21 @@ class QdrantStore:
         Raises:
             VectorStoreError: Qdrant refused or is unreachable.
         """
-        return self._query(list(vector), using=DENSE_VECTOR_NAME, limit=limit, fields=with_payload)
+        return self._query(
+            list(vector),
+            using=DENSE_VECTOR_NAME,
+            limit=limit,
+            fields=with_payload,
+            query_filter=query_filter,
+        )
 
     def search_sparse(
-        self, vector: SparseVector, *, limit: int, with_payload: Sequence[str] | None = None
+        self,
+        vector: SparseVector,
+        *,
+        limit: int,
+        with_payload: Sequence[str] | None = None,
+        query_filter: QueryFilter | None = None,
     ) -> list[SearchHit]:
         """Highest BM25 dot products under the ``sparse`` named vector.
 
@@ -469,7 +525,13 @@ class QdrantStore:
             _log.info("sparse_query_empty", collection=self._collection)
             return []
         query = models.SparseVector(indices=list(vector.indices), values=list(vector.values))
-        return self._query(query, using=SPARSE_VECTOR_NAME, limit=limit, fields=with_payload)
+        return self._query(
+            query,
+            using=SPARSE_VECTOR_NAME,
+            limit=limit,
+            fields=with_payload,
+            query_filter=query_filter,
+        )
 
     def _query(
         self,
@@ -478,11 +540,14 @@ class QdrantStore:
         using: str,
         limit: int,
         fields: Sequence[str] | None,
+        query_filter: QueryFilter | None = None,
     ) -> list[SearchHit]:
         """Run one branch of the search and normalise the response.
 
-        Both branches share this so the payload projection, the ``ef`` setting and
-        the error wrapping cannot drift apart between dense and sparse.
+        Both branches share this so the payload projection, the ``ef`` setting, the
+        metadata filter and the error wrapping cannot drift apart between dense and
+        sparse. A filter that reached only one branch would change the candidate
+        set fusion sees without changing what the caller asked for.
         """
         if limit <= 0:
             raise VectorStoreError(f"search limit must be positive, got {limit}")
@@ -492,6 +557,7 @@ class QdrantStore:
                 query=query,
                 using=using,
                 limit=limit,
+                query_filter=to_qdrant_filter(query_filter),
                 with_payload=list(fields) if fields else True,
                 # ef applies to the HNSW graph only; Qdrant ignores it for the
                 # sparse inverted index, so passing it unconditionally is safe.
@@ -638,7 +704,12 @@ class InMemoryVectorStore:
         return len(self._points)
 
     def search_dense(
-        self, vector: Sequence[float], *, limit: int, with_payload: Sequence[str] | None = None
+        self,
+        vector: Sequence[float],
+        *,
+        limit: int,
+        with_payload: Sequence[str] | None = None,
+        query_filter: QueryFilter | None = None,
     ) -> list[SearchHit]:
         """Brute-force cosine search, matching the real store's distance."""
         if limit <= 0:
@@ -649,11 +720,20 @@ class InMemoryVectorStore:
                 f"{self._vector_size}-dimensional collection"
             )
         query = list(vector)
-        scored = [(point_id, _cosine(query, stored)) for point_id, stored in self._vectors.items()]
+        scored = [
+            (point_id, _cosine(query, stored))
+            for point_id, stored in self._vectors.items()
+            if self._passes(point_id, query_filter)
+        ]
         return self._top(scored, limit=limit, fields=with_payload)
 
     def search_sparse(
-        self, vector: SparseVector, *, limit: int, with_payload: Sequence[str] | None = None
+        self,
+        vector: SparseVector,
+        *,
+        limit: int,
+        with_payload: Sequence[str] | None = None,
+        query_filter: QueryFilter | None = None,
     ) -> list[SearchHit]:
         """Brute-force dot product, which for these vectors is the BM25 score."""
         if limit <= 0:
@@ -665,9 +745,20 @@ class InMemoryVectorStore:
             for point_id, stored in self._sparse.items()
             # A document sharing no term with the query scores 0 and would only
             # pad the candidate list with noise for fusion to rank.
-            if vector.dot(stored) > 0.0
+            if vector.dot(stored) > 0.0 and self._passes(point_id, query_filter)
         ]
         return self._top(scored, limit=limit, fields=with_payload)
+
+    def _passes(self, point_id: str, query_filter: QueryFilter | None) -> bool:
+        """Whether a stored point survives *query_filter*.
+
+        Applied **before** scoring and before the ``limit`` cut, which is what
+        makes this store agree with Qdrant: filtering a top-k list after the fact
+        would return fewer hits than asked for whenever a match ranked low.
+        """
+        if query_filter is None or query_filter.is_empty:
+            return True
+        return query_filter.matches(self._points.get(point_id, {}))
 
     def _top(
         self,

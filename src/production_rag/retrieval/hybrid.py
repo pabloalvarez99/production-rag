@@ -22,6 +22,7 @@ So a fresh process can query a collection it did not build, with no warm-up.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,6 +30,11 @@ import structlog
 
 from production_rag.config_loader import RerankConfig, RetrievalConfig, YamlConfig
 from production_rag.retrieval.embeddings import EmbeddingProvider
+from production_rag.retrieval.filters import (
+    NO_FILTER_SUMMARY,
+    FilterPolicy,
+    QueryFilter,
+)
 from production_rag.retrieval.rerank import Reranker, RerankOutcome, apply_rerank
 from production_rag.retrieval.rrf import rank_keys, reciprocal_rank_fusion
 from production_rag.retrieval.sparse import SparseEncoder, build_sparse_encoder
@@ -139,6 +145,11 @@ class RetrievalResult:
     weights: dict[str, float] = field(default_factory=dict)
     score_threshold: float = 0.0
     dropped_below_threshold: int = 0
+    # The metadata filter that was in force, if any. Reported for the same reason
+    # as the mode and the candidate depths: a hit count measured under a filter is
+    # not comparable with one measured without it, and nothing else in the result
+    # says a filter was applied.
+    query_filter: QueryFilter | None = None
     # What the rerank stage did. Reported even when nothing reranked, because "was
     # this ranking reranked?" must be answerable from the response a caller already
     # has — a rerank that quietly stopped happening looks exactly like a rerank
@@ -161,6 +172,9 @@ class RetrievalResult:
             "weights": dict(self.weights),
             "score_threshold": self.score_threshold,
             "dropped_below_threshold": self.dropped_below_threshold,
+            "filters": (
+                self.query_filter.to_summary() if self.query_filter else NO_FILTER_SUMMARY
+            ),
             "rerank": self.rerank.as_dict() if self.rerank else NO_RERANK_SUMMARY,
             "hits": [hit.to_dict() for hit in self.hits],
         }
@@ -178,6 +192,7 @@ class Retriever:
         sparse_encoder: SparseEncoder | None = None,
         reranker: Reranker | None = None,
         rerank_config: RerankConfig | None = None,
+        filter_policy: FilterPolicy | None = None,
     ) -> None:
         """Wire the retriever to a store and an embedder.
 
@@ -193,6 +208,11 @@ class Retriever:
                 default — is exactly the M2 pipeline, so adding this parameter
                 changes no existing behaviour.
             rerank_config: Depth and failure policy for that stage.
+            filter_policy: Which metadata fields a caller may filter on, and which
+                of them are indexed. Defaults to the allowlist in *config* with no
+                index information — honest for a caller that did not supply the
+                Qdrant block, since claiming an index that may not exist would
+                suppress the payload-scan warning.
         """
         self._store = store
         self._embedder = embedder
@@ -200,6 +220,9 @@ class Retriever:
         self._sparse = sparse_encoder or build_sparse_encoder()
         self._reranker = reranker
         self._rerank_config = rerank_config or RerankConfig()
+        self._filter_policy = filter_policy or FilterPolicy.from_fields(
+            self._config.filters.allowed_fields
+        )
 
     @classmethod
     def from_config(
@@ -227,6 +250,14 @@ class Retriever:
             config=config.retrieval,
             reranker=reranker,
             rerank_config=config.rerank,
+            # Both halves of the filter contract come from the file: what a
+            # deployment permits (`retrieval.filters`) and what it made cheap
+            # (`qdrant.payload_indexes`). Reading only the first is how an
+            # allowlisted field silently becomes a payload scan.
+            filter_policy=FilterPolicy.from_fields(
+                config.retrieval.filters.allowed_fields,
+                [index.field for index in config.qdrant.payload_indexes],
+            ),
             sparse_encoder=build_sparse_encoder(
                 method=sparse_config.method,
                 k1=sparse_config.k1,
@@ -251,12 +282,18 @@ class Retriever:
         """The embedder in use. An eval score is only meaningful next to its model."""
         return self._embedder
 
+    @property
+    def filter_policy(self) -> FilterPolicy:
+        """Which metadata fields this retriever accepts a filter on."""
+        return self._filter_policy
+
     def retrieve(
         self,
         query: str,
         *,
         mode: str | None = None,
         top_k: int | None = None,
+        filters: Mapping[str, Any] | None = None,
     ) -> RetrievalResult:
         """Retrieve chunks for *query*.
 
@@ -267,6 +304,10 @@ class Retriever:
             top_k: Hits to return after fusion. Defaults to the configured value.
                 Candidate depth per branch is *not* derived from this: fusion can
                 only reorder what it was given, so the branches stay deep.
+            filters: Metadata narrowing, e.g. ``{"source": "handbook"}``. Fields
+                must be in ``retrieval.filters.allowed_fields``; an unknown one
+                raises rather than being dropped. Omitted or empty is exactly the
+                unfiltered path, byte for byte.
 
         Returns:
             A :class:`RetrievalResult`, possibly with no hits — an honest empty
@@ -274,6 +315,9 @@ class Retriever:
 
         Raises:
             RetrievalError: Empty query, unknown mode, or non-positive *top_k*.
+            FilterError: A filter field is not allowlisted, or its value is not
+                expressible. Raised before the embedder is called, so a rejected
+                filter never costs a provider round-trip.
             EmbeddingError: The embedding provider failed.
             VectorStoreError: The store could not be queried.
             RerankError: Reranking failed and ``rerank.fail_open`` is false.
@@ -292,6 +336,10 @@ class Retriever:
         if limit <= 0:
             raise RetrievalError(f"top_k must be positive, got {limit}")
 
+        # Before the embedder, deliberately: a filter this deployment does not
+        # allow must not cost an embedding call to find out.
+        query_filter = self._filter_policy.build(filters)
+
         # With a reranker in the pipeline, fusion is no longer the last word, so it
         # hands over a deeper shortlist: the reranker can only recover a relevant
         # chunk it was actually shown. Never fewer than the caller asked for.
@@ -305,7 +353,10 @@ class Retriever:
         if resolved_mode in (MODE_DENSE, MODE_HYBRID):
             vector = self._embedder.embed_query(text)
             dense_hits = self._store.search_dense(
-                vector, limit=self._config.dense_top_k, with_payload=fields
+                vector,
+                limit=self._config.dense_top_k,
+                with_payload=fields,
+                query_filter=query_filter,
             )
 
         if resolved_mode in (MODE_SPARSE, MODE_HYBRID):
@@ -317,7 +368,10 @@ class Retriever:
                 _log.info("sparse_query_empty", query_length=len(text))
             else:
                 sparse_hits = self._store.search_sparse(
-                    sparse_query, limit=self._config.sparse_top_k, with_payload=fields
+                    sparse_query,
+                    limit=self._config.sparse_top_k,
+                    with_payload=fields,
+                    query_filter=query_filter,
                 )
 
         fused, dropped = self._fuse(dense_hits, sparse_hits, mode=resolved_mode, limit=fuse_limit)
@@ -342,12 +396,14 @@ class Retriever:
             weights=self._weights(resolved_mode),
             score_threshold=self._config.score_threshold,
             dropped_below_threshold=dropped,
+            query_filter=query_filter,
             rerank=outcome if self._reranker else None,
         )
         _log.info(
             "retrieval_completed",
             mode=resolved_mode,
             returned=len(outcome.hits),
+            filter_fields=list(query_filter.fields) if query_filter else [],
             reranker=outcome.reranker,
             rerank_applied=outcome.applied,
             dense_candidates=len(dense_hits),
