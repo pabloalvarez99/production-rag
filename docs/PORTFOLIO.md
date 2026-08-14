@@ -6,8 +6,8 @@ contradict its author, and decision records for the trade-offs that were not obv
 
 The series is deliberately sequential. Each project consumes the previous project's public
 boundary instead of restarting from a template, while keeping a credential-free standalone
-path. P1 is released, P2 has reached its evaluation milestone, and P3 has a public health-only
-scaffold; later systems remain plans.
+path. P1 is released, P2 has reached its evaluation milestone, P3 has reached its traced
+API/evaluation milestone, and RepoMind answers fixture-backed code questions; P5 remains a plan.
 
 ## The series
 
