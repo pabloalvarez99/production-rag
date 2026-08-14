@@ -136,6 +136,68 @@ class TestSuccessPath:
             assert key in payload
 
 
+class TestFilters:
+    """``--filter field=value``: allowlisted, repeatable, and reported."""
+
+    def test_an_allowlisted_filter_keeps_the_matching_hits(
+        self, patched_store: InMemoryVectorStore, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        code, payload, _ = _run(capsys, "--query", "qdrant vectors", "--filter", "source=sample")
+        assert code == 0
+        assert payload["hits"]
+        assert payload["filters"]["applied"] is True
+        assert payload["filters"]["fields"] == ["source"]
+
+    def test_a_filter_matching_nothing_is_an_honest_empty_success(
+        self, patched_store: InMemoryVectorStore, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        code, payload, _ = _run(capsys, "--query", "qdrant vectors", "--filter", "source=absent")
+        assert code == 0
+        assert payload["returned"] == 0
+
+    def test_an_unfiltered_run_reports_no_filter(
+        self, patched_store: InMemoryVectorStore, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _, payload, _ = _run(capsys, "--query", "qdrant vectors")
+        assert payload["filters"] == {
+            "applied": False,
+            "fields": [],
+            "unindexed": [],
+            "conditions": [],
+        }
+
+    def test_a_field_outside_the_allowlist_exits_two(
+        self, patched_store: InMemoryVectorStore, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Same stable slug the HTTP 422 body carries, not the exception class name."""
+        code, payload, _ = _run(capsys, "--query", "qdrant", "--filter", "author=pablo")
+        assert code == 2
+        assert payload["ok"] is False
+        assert payload["error_type"] == "filter_not_allowed"
+
+    def test_a_malformed_filter_argument_exits_two(
+        self, patched_store: InMemoryVectorStore, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        code, payload, _ = _run(capsys, "--query", "qdrant", "--filter", "source")
+        assert code == 2
+        assert payload["error_type"] == "filter_invalid_value"
+
+    def test_a_repeated_field_means_any_of(
+        self, patched_store: InMemoryVectorStore, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _, payload, _ = _run(
+            capsys,
+            "--query",
+            "qdrant vectors",
+            "--filter",
+            "source=absent",
+            "--filter",
+            "source=sample",
+        )
+        assert payload["hits"]
+        assert payload["filters"]["conditions"][0]["values"] == ["absent", "sample"]
+
+
 class TestUsageErrors:
     def test_a_bad_mode_is_rejected_by_the_parser(self) -> None:
         # argparse exits 2 itself, which is the same code the CLI uses for a bad

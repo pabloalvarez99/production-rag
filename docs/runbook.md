@@ -504,8 +504,8 @@ Invoke-RestMethod -Method Post http://localhost:8000/v1/query `
 
 Request fields: `question` (required, 1–8000 characters, whitespace-stripped),
 `mode` (`dense` / `sparse` / `hybrid`), `rerank` (`off` / `auto` / `fake` /
-`local` / `cohere`), `llm` (`fake` / `openai`, **default `fake`**), `debug`.
-Anything omitted falls back to `configs/default.yaml`. Unknown fields are
+`local` / `cohere`), `llm` (`fake` / `openai`, **default `fake`**), `filters`,
+`debug`. Anything omitted falls back to `configs/default.yaml`. Unknown fields are
 rejected with 422 rather than ignored.
 
 The response is four fields — `answer`, `citations`, `refused`, `refusal_reason`
@@ -519,8 +519,53 @@ deterministic offline path — no key, no spend, and no answer worth reading. Th
 default is on purpose: an unrequested bill is worse than an obviously fake
 answer. It also means a demo that forgets the field is demonstrating the schema.
 
-There is no `filters` field yet. `retrieval.filters.allowed_fields` in the config
-is still declared-only.
+### Filtering by metadata
+
+`filters` narrows retrieval to documents whose payload matches, before the search
+runs. Only fields listed in `retrieval.filters.allowed_fields` are accepted —
+`source`, `title`, `tags` by default. Anything else is **422**, never a dropped
+condition: a silently ignored filter answers a different question than the one
+asked, and nothing in the response would say so.
+
+```bash
+curl -s localhost:8000/v1/query -H 'content-type: application/json' \
+  -d '{"question": "how are sparse vectors stored", "filters": {"source": "sample", "tags": ["bm25"]}}' | jq
+```
+
+```powershell
+$body = @{
+    question = "how are sparse vectors stored"
+    filters  = @{ source = "sample"; tags = @("bm25") }
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post http://localhost:8000/v1/query `
+    -ContentType 'application/json' -Body $body
+```
+
+Several values on one field mean **any of**; several fields are combined with
+**and**. Matching is exact keyword equality — no ranges, no substrings, no
+negation. See [ADR 0011](adr/0011-metadata-filters.md) for why the language stops
+there.
+
+**`source` is not `source_path`.** `source` is the first path segment under the
+corpus root (`sample`) and is keyword-indexed. `source_path` is the full
+corpus-relative path (`sample/08-bm25-vs-dense.md`), is not indexed, and is not
+filterable — asking for it is an unknown field, not a near miss.
+
+Both CLIs take the same contract through a repeatable flag:
+
+```bash
+python -m production_rag.retrieve --query "sparse vectors" --filter source=sample
+python -m production_rag.query --question "how are sparse vectors stored" \
+    --filter source=sample --filter tags=bm25 --filter tags=rrf
+```
+
+A rejected field exits **2** with `"error_type": "filter_not_allowed"` on the last
+stdout line — the same slug the HTTP 422 body carries.
+
+Keep `allowed_fields` in sync with `qdrant.payload_indexes`. A field allowed but
+not indexed still works and degrades to a payload scan; it is logged as
+`filter_field_unindexed` and listed under `filters.unindexed` in the retrieval
+summary. `title` ships in exactly that state.
 
 ### `X-Request-ID` is the debugging handle
 
@@ -661,9 +706,18 @@ was retrieved and no token was spent — validation runs before the pipeline.
 
 **422 on an unknown field.**
 The request body carries a field the schema does not define (a typo, or a control
-that does not exist yet, such as `filters` or `top_k`). Rejected rather than
-ignored: a silently dropped control answers a different question than the one
-asked.
+that does not exist yet, such as `top_k`). Rejected rather than ignored: a
+silently dropped control answers a different question than the one asked.
+
+**422 with `error_type: filter_not_allowed`.**
+`filters` names a field outside `retrieval.filters.allowed_fields`. The `detail`
+object carries `error_type`, the offending `field`, and a message listing what is
+allowed. Most often this is `source_path` where `source` was meant. Branch on
+`error_type`, never on the message.
+
+**422 with `error_type: filter_invalid_value`.**
+An allowlisted field carries something this contract cannot express: a number, a
+null, an empty list, or a blank string. Values are keywords or lists of keywords.
 
 **503 from `POST /v1/query`.**
 The query pipeline module is not present in this checkout. That is a

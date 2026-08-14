@@ -10,7 +10,8 @@
 #   qdrant            LIVE   (dense + sparse vectors, payload indexes, consistency)
 #   retrieval         LIVE   read by `python -m production_rag.retrieve` and by
 #                            the query graph behind POST /v1/query
-#   retrieval.filters DECLARED  no endpoint or CLI accepts `filters` yet
+#   retrieval.filters LIVE   (M7) POST /v1/query and both CLIs accept `filters`;
+#                            a field outside allowed_fields is rejected, not dropped
 #   rerank            LIVE   opt-in; the `fake` provider always runs offline,
 #                            `local`/`cohere` are the ones that mean anything
 #   generation        LIVE   answers with [n] citations, or an explicit refusal;
@@ -167,13 +168,32 @@ retrieval:
   # tokens in the generation prompt.
   return_payload_fields: [doc_id, chunk_id, title, source_path, heading_path, text]
   filters:
-    # status: DECLARED ONLY. Nothing reads this yet. Neither POST /v1/query nor
-    # the CLI accepts a `filters` field — a request carrying one is rejected with
-    # 422 as an unknown field, which is the honest answer while the allowlist is
-    # unwired: silently dropping a filter would answer a different question than
-    # the one asked. When it lands, keep it in sync with qdrant.payload_indexes;
-    # an unindexed filter degrades to a payload scan.
-    allowed_fields: [source, title, tags, created_at]
+    # status: LIVE (M7). POST /v1/query takes an optional `filters` object, and
+    # both CLIs take a repeatable `--filter field=value`. A field NOT in this list
+    # is rejected — 422 with error_type `filter_not_allowed` over HTTP, exit code
+    # 2 from a CLI — never silently dropped, because a dropped filter answers a
+    # different question than the one asked and the caller cannot tell.
+    #
+    # Exact keyword matching only: several values on one field are OR, several
+    # fields are AND. No ranges, no substrings, no negation — every field here is
+    # a keyword payload, and a range predicate is exactly the scan this list
+    # exists to prevent. See docs/adr/0011-metadata-filters.md.
+    #
+    # `source` is the PUBLIC name and the payload key: the first path segment
+    # under the corpus root (`sample`), keyword-indexed. It is NOT `source_path`,
+    # the full corpus-relative file path, which has no index and is not
+    # filterable. Asking for `source_path` is an unknown field.
+    #
+    # Keep in sync with qdrant.payload_indexes below. A field allowed here and
+    # missing there still works and degrades to a payload scan — logged as
+    # `filter_field_unindexed` and named in the retrieval summary's `filters`
+    # object, never silent. `title` is deliberately in that state: it is the one
+    # allowlisted field with no keyword index, so the warning path is exercised by
+    # the default profile rather than only by a test.
+    #
+    # `created_at` was listed here until M7 and was removed: no ingest payload
+    # ever carried that key, so the filter could only ever match nothing.
+    allowed_fields: [source, title, tags]
 
 # ---------------------------------------------------------------------------
 # Rerank — cross-encoder pass over the fused candidates.

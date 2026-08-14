@@ -845,7 +845,7 @@ after it.
 | `ingest.sparse` (BM25 k1/b, lowercase, stopwords) | **live** — vectors are written at ingest |
 | `qdrant` (collection, dense + sparse vectors, payload indexes, write consistency) | live |
 | `retrieval` (mode, top-k per branch, RRF, threshold, payload fields) | **live** — read by the retrieve command and by the query graph |
-| `retrieval.filters.allowed_fields` | declared only — `POST /v1/query` accepts no `filters` field yet, so there is nothing to enforce the allowlist against. The keys stay because the payload indexes that would make a filter cheap already exist |
+| `retrieval.filters.allowed_fields` | **live** — `POST /v1/query` and both CLIs take a `filters` object; a field outside the list is refused (422 / exit 2), never dropped. Exact keyword match only, and an allowlisted field with no payload index is reported as a scan rather than silently costing one. See [ADR 0011](adr/0011-metadata-filters.md) |
 | `rerank` (enabled, provider, input_top_k, top_k, timeout, fail_open) | **live** — read by the retrieve command and by the query graph. Ordering quality is real only on `local` / `cohere`; the `fake` provider exercises the stage, not relevance |
 | `generation` (provider, model, temperature, budgets, timeout, retries, stream) | **live** — read by the query path. Answer quality is real only on `openai`; the `fake` provider exercises the contract, not the answer |
 | `generation.citations` (style, require_citation, refuse_without_evidence, refusal_message) | **live** — `[n]` markers are resolved and the refusal edge is taken from these keys |

@@ -46,6 +46,16 @@ class QueryRequest(BaseModel):
             "Query embedder. 'fake' is the credential-free default and must match ingestion."
         ),
     )
+    filters: dict[str, str | list[str]] | None = Field(
+        default=None,
+        description=(
+            "Metadata narrowing, e.g. {\"source\": \"handbook\", \"tags\": [\"bm25\"]}. "
+            "Field names must appear in retrieval.filters.allowed_fields; an unknown "
+            "field is rejected with 422 and error_type 'filter_not_allowed'. Several "
+            "values on one field are OR, several fields are AND. Omitted is unfiltered."
+        ),
+        examples=[{"source": "sample", "tags": ["bm25", "rrf"]}],
+    )
     debug: bool = Field(
         default=False,
         description="Ask the pipeline to collect diagnostics; never exposes credentials.",

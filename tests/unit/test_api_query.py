@@ -12,6 +12,8 @@ from fastapi.testclient import TestClient
 from production_rag.api.routes import query as query_route
 from production_rag.api.schemas import CitationOut, QueryDebug, QueryRequest, QueryResponse
 from production_rag.config import Settings
+from production_rag.config_loader import YamlConfig
+from production_rag.retrieval.filters import FILTER_NOT_ALLOWED, FilterError
 from production_rag.retrieval.hybrid import Retriever
 
 ClientFactory = Callable[[Settings], TestClient]
@@ -251,6 +253,93 @@ def test_query_rejects_invalid_requests(client: TestClient, body: dict[str, obje
 
     assert response.status_code == 422
     assert executor.calls == []
+
+
+def test_a_rejected_filter_becomes_a_typed_422(client: TestClient) -> None:
+    """The route maps a filter rejection onto 422 with a machine-readable detail.
+
+    422 rather than 400: the body is well-formed and unanswerable as written,
+    which is the same class as an unknown field. The detail is an object so a
+    client branches on ``error_type`` and never on the wording.
+    """
+
+    def raising_executor(
+        payload: QueryRequest, *, settings: Settings, request_id: str
+    ) -> QueryResponse:
+        raise FilterError(
+            "filtering on 'author' is not allowed; allowed fields: source, title, tags",
+            error_type=FILTER_NOT_ALLOWED,
+            field="author",
+        )
+
+    app = cast(FastAPI, client.app)
+    app.dependency_overrides[query_route.get_query_executor] = lambda: raising_executor
+
+    response = client.post(
+        "/v1/query",
+        json={"question": "Why use RRF?", "filters": {"author": "pablo"}},
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["error_type"] == "filter_not_allowed"
+    assert detail["field"] == "author"
+    assert "source" in detail["message"]
+
+
+def test_the_default_executor_rejects_a_field_outside_the_allowlist(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Enforced before an embedder, a store or a model is constructed.
+
+    Asserted against the real executor rather than through a fake one, because
+    the point of the check is that it happens *early* — a filter this deployment
+    does not allow must not cost a provider round-trip to discover.
+    """
+    # The YAML profile is loaded for the allowlist, and nothing else in this
+    # module reads a file. Patching it keeps this test independent of the
+    # repository's working directory and of whatever `configs/default.yaml`
+    # happens to say — the contract under test is "an unknown field is refused",
+    # not the shipped list.
+    monkeypatch.setattr(
+        query_route,
+        "load_yaml_config",
+        lambda _: YamlConfig(),
+    )
+
+    with pytest.raises(FilterError) as excinfo:
+        query_route.execute_query(
+            QueryRequest(question="Why use RRF?", filters={"source_path": "a/b.md"}),
+            settings=settings,
+            request_id="test-filter-1",
+        )
+
+    assert excinfo.value.error_type == FILTER_NOT_ALLOWED
+    assert excinfo.value.field == "source_path"
+
+
+def test_an_allowlisted_filter_reaches_the_executor(client: TestClient) -> None:
+    executor = FakeQueryExecutor(_answer())
+    _override(client, executor)
+
+    response = client.post(
+        "/v1/query",
+        json={"question": "Why use RRF?", "filters": {"source": "sample", "tags": ["bm25"]}},
+    )
+
+    assert response.status_code == 200
+    assert executor.calls[0][0].filters == {"source": "sample", "tags": ["bm25"]}
+
+
+def test_an_omitted_filters_field_stays_none(client: TestClient) -> None:
+    """The unfiltered request is unchanged by this feature existing."""
+    executor = FakeQueryExecutor(_answer())
+    _override(client, executor)
+
+    client.post("/v1/query", json={"question": "Why use RRF?"})
+
+    assert executor.calls[0][0].filters is None
 
 
 def test_query_returns_503_when_a1_pipeline_is_missing(

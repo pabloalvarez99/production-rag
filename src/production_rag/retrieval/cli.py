@@ -48,6 +48,7 @@ from production_rag.retrieval.embeddings import (
     FAKE_EMBEDDER,
     EmbeddingError,
 )
+from production_rag.retrieval.filters import FilterError, parse_filter_arguments
 from production_rag.retrieval.hybrid import (
     RETRIEVAL_MODES,
     RetrievalError,
@@ -130,6 +131,20 @@ def build_parser() -> argparse.ArgumentParser:
             "and demos, not a quality claim. 'local' runs a cross-encoder through "
             "sentence-transformers. 'cohere' needs COHERE_API_KEY in the environment. "
             "'auto' follows rerank.enabled and rerank.provider in the YAML profile."
+        ),
+    )
+    parser.add_argument(
+        "--filter",
+        dest="filters",
+        action="append",
+        metavar="FIELD=VALUE",
+        help=(
+            # ASCII only: --help may be written to a cp1252 console.
+            "Metadata filter, repeatable. Only fields in retrieval.filters.allowed_fields "
+            "are accepted; anything else fails with exit code 2 and nothing is retrieved. "
+            "Repeating a field means 'any of' (--filter tags=bm25 --filter tags=rrf); "
+            "different fields are combined with AND. 'source' is the first path segment "
+            "under the corpus root, not the full source_path."
         ),
     )
     parser.add_argument(
@@ -233,10 +248,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     try:
+        filters = parse_filter_arguments(args.filters)
+    except FilterError as exc:
+        # Malformed --filter argument: the invocation is wrong, nothing ran.
+        return _fail(str(exc), exc.error_type, EXIT_USAGE)
+
+    try:
         retriever = Retriever.from_config(
             store=store, embedder=embedder, config=config, reranker=reranker
         )
-        result = retriever.retrieve(args.query, mode=args.mode, top_k=args.top_k)
+        result = retriever.retrieve(
+            args.query, mode=args.mode, top_k=args.top_k, filters=filters
+        )
+    except FilterError as exc:
+        # A field outside the allowlist. Retrying changes nothing, and the
+        # allowlist is named in the message, so exit 2 like any other bad
+        # invocation. `error_type` is the stable slug, not the class name: the
+        # HTTP 422 body carries the same string for the same mistake.
+        return _fail(str(exc), exc.error_type, EXIT_USAGE)
     except RerankError as exc:
         # Only reachable with rerank.fail_open false; the run started, and the
         # failure may be transient.

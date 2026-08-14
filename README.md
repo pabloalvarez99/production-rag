@@ -136,6 +136,7 @@ and does not prove.
 | Cross-encoder reranking with fail-open degradation | **LIVE** | `retrieval/rerank.py`; local, optional Cohere, and deterministic adapters |
 | Grounded generation with resolvable `[n]` citations | **LIVE** | `generation/citations.py` behind the LangGraph nodes in `graph/` |
 | Refusal as a first-class response outcome | **LIVE** | `generation/guardrails.py`; insufficient evidence never invents support |
+| Allowlisted metadata filters, failing closed | **LIVE** | `retrieval/filters.py`; a field outside `retrieval.filters.allowed_fields` is a typed 422, never a silently widened answer |
 | Server-rendered query UI | **LIVE** | `api/routes/ui.py` and htmx; pins the local embedder and generator, so the UI cannot bill |
 | Health, readiness, request ids, structured logs | **LIVE** | `/health`, `/v1/ready`, middleware, caller-controlled safe diagnostics |
 | Tracing seam | **LIVE** | Null tracer by default; Langfuse is opt-in |

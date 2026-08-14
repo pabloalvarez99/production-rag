@@ -71,6 +71,9 @@ Stated once, plainly, because an honest boundary is worth more than a feature li
   happened.
 - **No authentication, authorization or rate limiting.** Anyone who can reach the port can
   query the service. Do not expose it to an untrusted network. See [SECURITY.md](../SECURITY.md).
+  Metadata filters are live, and they are not a substitute: an allowlist bounds which *fields*
+  a query may filter on, never which documents a caller may see
+  ([ADR-0011](adr/0011-metadata-filters.md)).
 - **No metrics endpoint.** The configuration shape exists and is marked `DECLARED`; the route
   does not.
 - **No production retry, timeout or circuit-breaker policy, and no multi-tenancy.**
