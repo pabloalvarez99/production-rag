@@ -82,25 +82,18 @@ async def ready(settings: SettingsDep) -> ReadyResponse:
     """
     identity = resolve_collection_identity(settings)
     checks = {"settings": "ok", "identity": str(identity.get("source", "unknown"))}
+    raw_docs = identity.get("doc_count")
+    doc_count = raw_docs if isinstance(raw_docs, int) else None
+    raw_embedder = identity.get("embedder_id")
+    raw_chunker = identity.get("chunker_version")
+    raw_hash = identity.get("corpus_hash")
     return ReadyResponse(
         status="ready",
         qdrant_configured=settings.qdrant_configured,
         checks=checks,
-        embedder_id=(
-            str(identity["embedder_id"]) if identity.get("embedder_id") is not None else None
-        ),
-        chunker_version=(
-            str(identity["chunker_version"])
-            if identity.get("chunker_version") is not None
-            else None
-        ),
-        doc_count=(
-            int(identity["doc_count"])  # type: ignore[arg-type]
-            if isinstance(identity.get("doc_count"), int)
-            else None
-        ),
-        corpus_hash=(
-            str(identity["corpus_hash"]) if identity.get("corpus_hash") is not None else None
-        ),
+        embedder_id=str(raw_embedder) if raw_embedder is not None else None,
+        chunker_version=str(raw_chunker) if raw_chunker is not None else None,
+        doc_count=doc_count,
+        corpus_hash=str(raw_hash) if raw_hash is not None else None,
         collection=str(identity.get("collection") or settings.qdrant_collection),
     )
