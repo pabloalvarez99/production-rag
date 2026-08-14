@@ -27,8 +27,19 @@ BASE_URL = "http://127.0.0.1:8000"
 COLLECTION = "production_rag_ui_capture"
 GROUNDED_QUESTION = "Why does hybrid search use reciprocal rank fusion?"
 REFUSAL_QUESTION = "Who won the Antarctic underwater chess championship?"
+FILTER_FIELD = "tags"
+FILTER_VALUE = "hybrid"
+"""The narrowing captured in ``ui-filtered.png``.
+
+Chosen against ``data/raw/sample`` rather than invented: every citation the
+grounded question returns under this filter comes from ``01-hybrid-search.md``,
+so the capture shows a filter that visibly did something. ``source`` is the
+wrong field for this corpus — ingesting ``data/raw/sample`` makes it the corpus
+root, so every point carries ``source: root`` and the filter would narrow
+nothing."""
 CAPTURES = {
     "grounded": ASSETS / "ui-grounded.png",
+    "filtered": ASSETS / "ui-filtered.png",
     "refused": ASSETS / "ui-refusal.png",
     "error": ASSETS / "ui-service-failure.png",
 }
@@ -50,12 +61,28 @@ def _wait_for_api(timeout: float = 120.0) -> None:
     raise RuntimeError(f"API did not become healthy within {timeout:.0f} seconds")
 
 
-def _submit(page: Page, question: str, outcome: str) -> None:
+def _submit(
+    page: Page,
+    question: str,
+    outcome: str,
+    *,
+    filter_field: str = "",
+    filter_value: str = "",
+) -> None:
     page.goto(BASE_URL, wait_until="networkidle")
     page.locator("#question").fill(question)
+    if filter_field:
+        # Set through the controls a reviewer uses, so the capture shows the
+        # filter that produced the answer rather than only its result.
+        page.locator("#filter-field").select_option(filter_field)
+        page.locator("#filter-value").fill(filter_value)
     page.evaluate(
-        """async question => {
-            const body = new URLSearchParams({question});
+        """async ({question, filterField, filterValue}) => {
+            const body = new URLSearchParams({
+                question,
+                filter_field: filterField,
+                filter_value: filterValue,
+            });
             const response = await fetch('/ui/query', {
                 method: 'POST',
                 headers: {'content-type': 'application/x-www-form-urlencoded'},
@@ -63,7 +90,7 @@ def _submit(page: Page, question: str, outcome: str) -> None:
             });
             document.querySelector('#result').innerHTML = await response.text();
         }""",
-        question,
+        {"question": question, "filterField": filter_field, "filterValue": filter_value},
     )
     page.locator(f'[data-outcome="{outcome}"]').wait_for(state="visible")
 
@@ -138,6 +165,15 @@ def capture(*, keep_stack: bool) -> None:
             _submit(page, GROUNDED_QUESTION, "grounded")
             page.locator(".diagnostics details").evaluate("details => details.open = true")
             _capture(page, "grounded")
+
+            _submit(
+                page,
+                GROUNDED_QUESTION,
+                "grounded",
+                filter_field=FILTER_FIELD,
+                filter_value=FILTER_VALUE,
+            )
+            _capture(page, "filtered")
 
             _submit(page, REFUSAL_QUESTION, "refused")
             if "score_threshold: 0.0" not in (ROOT / "configs/default.yaml").read_text():

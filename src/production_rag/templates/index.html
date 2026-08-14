@@ -13,11 +13,31 @@
 
   <section class="query-panel" aria-labelledby="query-title">
     <h2 id="query-title">Query</h2>
-    <form hx-post="/ui/query" hx-target="#result" hx-swap="innerHTML" hx-indicator="#querying">
+    <!-- A rejected filter answers 422, and htmx does not swap error responses by
+         default. The fragment IS the answer here, so the swap is forced. -->
+    <form hx-post="/ui/query" hx-target="#result" hx-swap="innerHTML" hx-indicator="#querying"
+          hx-on::before-swap="event.detail.shouldSwap = true; event.detail.isError = false">
       <label for="question">Question</label>
       <textarea id="question" name="question" rows="3" required maxlength="8000"
                 aria-describedby="question-hint" placeholder="What does the corpus say?"></textarea>
       <p id="question-hint" class="hint">Answered only from the indexed corpus. Markers such as [1] link to the passage they came from.</p>
+      {% if filter_fields %}
+        <fieldset class="filters">
+          <legend>Metadata filter (optional)</legend>
+          <div class="filter-row">
+            <label class="filter-label" for="filter-field">Field</label>
+            <select id="filter-field" name="filter_field" aria-describedby="filter-hint">
+              <option value="">No filter</option>
+              {% for name in filter_fields %}<option value="{{ name }}">{{ name }}</option>{% endfor %}
+            </select>
+            <label class="filter-label" for="filter-value">Value</label>
+            <input id="filter-value" name="filter_value" type="text" maxlength="200"
+                   autocomplete="off" placeholder="sample" aria-describedby="filter-hint">
+          </div>
+          <p id="filter-hint" class="hint">Only allowlisted fields are offered, and the allowlist comes from the same configuration the API enforces. A field outside it is rejected with 422, never dropped.</p>
+        </fieldset>
+      {% endif %}
+
       <div class="examples" role="group" aria-label="Example questions">
         <span class="examples-label">Try</span>
         <button type="button" data-question="Why does hybrid search use reciprocal rank fusion?">Answerable example</button>
@@ -44,6 +64,16 @@
   </footer>
 
   <script>
+    var filterField = document.getElementById('filter-field');
+    var filterValue = document.getElementById('filter-value');
+    if (filterField && filterValue) {
+      // A chosen field with no value is a filter that matches nothing, which the
+      // server rejects. Ask for the value here so the round trip is not needed.
+      filterField.addEventListener('change', function () {
+        filterValue.required = filterField.value !== '';
+      });
+    }
+
     document.querySelectorAll('[data-question]').forEach(function (button) {
       button.addEventListener('click', function () {
         var box = document.getElementById('question');

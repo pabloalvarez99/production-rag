@@ -22,6 +22,14 @@ button:hover { background: #22352e; }
 a { color: var(--green); }
 :focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 textarea:focus-visible { outline-offset: 1px; }
+.filters { margin: 1.2rem 0 0; padding: .9rem 1rem 1rem; border: 1px solid var(--line); border-radius: 12px; background: #0004; }
+.filters legend { padding: 0 .4rem; color: var(--green); font-size: .76rem; font-weight: 750; letter-spacing: .14em; text-transform: uppercase; }
+.filter-row { display: flex; flex-wrap: wrap; gap: .5rem .8rem; align-items: center; }
+.filter-label { margin: 0; color: var(--muted); font-size: .85rem; font-weight: 700; }
+select, input[type="text"] { padding: .55rem .7rem; color: var(--ink); background: var(--sunk); border: 1px solid var(--edge); border-radius: 10px; font: inherit; }
+input[type="text"] { flex: 1 1 12rem; min-width: 0; }
+input::placeholder { color: var(--muted); }
+.chip-filter { color: var(--green); border-color: var(--green); }
 .examples { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin: 1rem 0 1.2rem; }
 .examples-label { margin-right: .1rem; }
 .actions { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; }

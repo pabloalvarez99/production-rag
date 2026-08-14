@@ -15,8 +15,11 @@ from starlette.concurrency import run_in_threadpool
 
 from production_rag.api.deps import SettingsDep
 from production_rag.api.middleware import get_request_id
-from production_rag.api.routes.query import QueryExecutorDep
+from production_rag.api.routes.query import QueryExecutorDep, filter_policy
 from production_rag.api.schemas import QueryRequest, QueryResponse
+from production_rag.config import Settings
+from production_rag.config_loader import ConfigFileError, load_yaml_config
+from production_rag.retrieval.filters import FilterError, FilterPolicy
 
 PACKAGE_DIR = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = PACKAGE_DIR / "templates"
@@ -62,10 +65,51 @@ def _looks_like_empty_store(exc: Exception) -> bool:
     return "collection" in message and any(signal in message for signal in _EMPTY_STORE_SIGNALS[1:])
 
 
+def _filter_policy(settings: Settings) -> FilterPolicy:
+    """The same allowlist POST /v1/query enforces, for this deployment.
+
+    Read from configuration rather than hard-coded in the template, so the field
+    the UI offers and the field the API accepts cannot drift apart. A profile
+    that cannot be parsed yields an empty policy: the control disappears and any
+    filter posted by hand is rejected, which is the fail-closed direction.
+    """
+    try:
+        config = load_yaml_config(settings.config_path)
+    except ConfigFileError:
+        return FilterPolicy()
+    return filter_policy(config)
+
+
+def _filter_error_response(
+    request: Request,
+    exc: FilterError,
+    request_id: str,
+) -> HTMLResponse:
+    """Render a rejected filter as the typed 422 the API returns, not a 500."""
+    return templates.TemplateResponse(
+        request=request,
+        name="result.html",
+        context={
+            "state": "invalid-filter",
+            "message": str(exc),
+            "error_type": exc.error_type,
+            "request_id": request_id,
+        },
+        # The same code POST /v1/query answers with: the form is well formed and
+        # unanswerable as written. HTMX still swaps it, because the fragment is
+        # what the reviewer needs to see.
+        status_code=422,
+    )
+
+
 @router.get("/", response_class=HTMLResponse)
-def index(request: Request) -> HTMLResponse:
+def index(request: Request, settings: SettingsDep) -> HTMLResponse:
     """Render the offline-first query form."""
-    return templates.TemplateResponse(request=request, name="index.html")
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={"filter_fields": _filter_policy(settings).filterable_fields},
+    )
 
 
 @router.post("/ui/query", response_class=HTMLResponse)
@@ -78,11 +122,24 @@ async def submit_query(
     request_id = get_request_id(request)
     form = parse_qs((await request.body()).decode("utf-8"), keep_blank_values=True)
     question = form.get("question", [""])[0]
+    field = form.get("filter_field", [""])[0].strip()
+    # One field and one value, because that is the whole shape the control has.
+    # An unselected field means unfiltered, and the value is ignored rather than
+    # remembered: a query is either narrowed or it is not.
+    filters: dict[str, str | list[str]] | None = (
+        {field: form.get("filter_value", [""])[0]} if field else None
+    )
     try:
         # The demo path is pinned to the credential-free providers explicitly: the UI
         # promises "free / deterministic", so it must not inherit a schema default that
         # could later change to a billed provider.
-        payload = QueryRequest(question=question, llm="fake", embedder="fake", debug=True)
+        payload = QueryRequest(
+            question=question,
+            llm="fake",
+            embedder="fake",
+            debug=True,
+            filters=filters,
+        )
     except ValidationError:
         return templates.TemplateResponse(
             request=request,
@@ -95,6 +152,16 @@ async def submit_query(
             status_code=422,
         )
 
+    if payload.filters:
+        # Validated here as well as inside the executor, and with the same policy
+        # object: the fake executor the tests inject does no validation, and a
+        # reviewer posting an unknown field by hand must see the typed rejection
+        # rather than a generic failure fragment.
+        try:
+            _filter_policy(settings).build(payload.filters)
+        except FilterError as exc:
+            return _filter_error_response(request, exc, request_id)
+
     try:
         result = await run_in_threadpool(
             executor,
@@ -102,6 +169,8 @@ async def submit_query(
             settings=settings,
             request_id=request_id,
         )
+    except FilterError as exc:
+        return _filter_error_response(request, exc, request_id)
     except Exception as exc:  # noqa: BLE001 - the HTML boundary must remain renderable
         empty_store = _looks_like_empty_store(exc)
         return templates.TemplateResponse(
@@ -130,6 +199,11 @@ async def submit_query(
             "result": result,
             "segments": _answer_segments(result),
             "request_id": request_id,
+            # Echoed back so an answer can never be read as unfiltered when it
+            # was narrowed. Absent means nothing was asked for.
+            "applied_filter": (
+                f"{field} = {payload.filters[field]}" if payload.filters else None
+            ),
         },
     )
 

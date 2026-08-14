@@ -95,9 +95,12 @@ fake embedder, and start the web server. They make no billed provider call.
    answer and its evidence together.
 2. Ask **“Why does hybrid search use reciprocal rank fusion?”** Show the grounded
    answer, citation links, source passages, and pipeline timings.
-3. Ask **“Who won the Antarctic underwater chess championship?”** Show the explicit refusal and
-   its reason.
-4. Stop recording after the refusal. The refusal reads as a deliberate product
+3. Set the **metadata filter** to `tags` = `hybrid` and ask the first question again. Show
+   that every citation now comes from `01-hybrid-search.md`, and that the footer names the
+   narrowing.
+4. Clear the filter and ask **“Who won the Antarctic underwater chess championship?”** Show
+   the explicit refusal and its reason.
+5. Stop recording after the refusal. The refusal reads as a deliberate product
    choice only after the grounded path has established that the system will
    answer confidently when it has evidence.
 
@@ -116,9 +119,17 @@ refusal states its reason instead of guessing; a dependency failure says so with
 leaking the underlying error. Per-node durations sit behind the collapsed
 **Pipeline timings** control.
 
+An optional **metadata filter** narrows the question to documents whose payload matches
+one allowlisted field. The fields offered are read from `retrieval.filters.allowed_fields`
+for the running deployment, so the control cannot offer something the API would reject; a
+field posted by hand anyway renders the same typed 422 the API answers with.
+`docs/assets/ui-filtered.png` is the sample corpus answered under `tags` = `hybrid`, with
+every citation from `01-hybrid-search.md` and the narrowing named in the result footer.
+
 ## Refresh the still captures
 
-`docs/assets/ui-grounded.png`, `ui-refusal.png` and `ui-service-failure.png` come
+`docs/assets/ui-grounded.png`, `ui-filtered.png`, `ui-refusal.png` and
+`ui-service-failure.png` come
 from `python scripts/capture_ui.py`, after `pip install -e ".[docs]"` and
 `playwright install chromium`. That script drives the same credential-free stack
 these setup scripts start — fake providers, local corpus, no key — so refreshing the
