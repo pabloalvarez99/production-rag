@@ -89,12 +89,21 @@ deterministic embedder, and serves the UI. Open <http://localhost:8000/>.
 3. **"How does filtering work in Qdrant?"** — twice. Once unfiltered, then again with the
    **metadata filter** set to `title` = `Filtering` (the committed capture is titled
    **Filtering** for this beat).
+4. **Corpus identity (v1.0):** `GET /v1/ready` and show `embedder_id`, `chunker_version`,
+   `doc_count`, `corpus_hash`. Re-run ingest without changes and name
+   `chunks_skipped_unchanged` as the incremental no-op. Query with
+   `"collection": "wrong-name"` and show typed `error_type: wrong_collection` (not a
+   refusal).
+5. **Failure injection (v1.0):** stop Qdrant (`docker compose stop qdrant`) with
+   `CACHE_ENABLED=false`, re-ask a grounded question, and show **503 /
+   store_unavailable** — not refuse chrome. Restart Qdrant before the next beat.
 
 The order carries the argument. A refusal shown first reads as a system that cannot
 answer; a refusal shown second reads as a system that chose not to. The filter pair is
 one question asked twice, so the reviewer sees the narrowing change which documents the
 citations come from rather than taking the filter on trust. The stream beat is the same
-contract with the wait made visible: provisional text is never the answer.
+contract with the wait made visible: provisional text is never the answer. Identity and
+failure beats prove the system fails *typed*, not fluently wrong.
 
 ### What the reviewer must see
 

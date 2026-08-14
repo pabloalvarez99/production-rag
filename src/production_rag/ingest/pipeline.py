@@ -312,6 +312,25 @@ def run_ingest(
         duration_seconds=round(perf_counter() - started, 3),
         per_document=dict(counters.per_document),
     )
+    if not dry_run:
+        # Identity sidecar is free-path safe: pure disk hash, no Qdrant dial.
+        # Cache keys and /ready read it so two corpora cannot cross-hit by name.
+        try:
+            from production_rag.corpus_identity import (
+                build_corpus_identity,
+                default_identity_path,
+                write_identity_sidecar,
+            )
+
+            identity = build_corpus_identity(
+                corpus_root=source_dir,
+                embedder_id=embedder.model,
+                collection=collection_name,
+                chunking=config.ingest.chunking,
+            )
+            write_identity_sidecar(default_identity_path(collection_name), identity)
+        except OSError as exc:  # pragma: no cover - best-effort side channel
+            _log.warning("identity_sidecar_failed", error=str(exc))
     _log.info(
         "ingest_completed",
         **{

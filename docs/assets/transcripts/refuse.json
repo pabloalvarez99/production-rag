@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "path": "/v1/query",
+  "status": 200,
+  "body": {
+    "answer": "I cannot answer from the retrieved evidence.",
+    "citations": [],
+    "refused": true,
+    "refusal_reason": "no_evidence"
+  }
+}

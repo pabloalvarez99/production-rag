@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "n": 100,
+  "path": "POST /v1/query",
+  "providers": {
+    "embedder": "fake",
+    "llm": "fake",
+    "executor": "in-process-fake"
+  },
+  "billed": false,
+  "hardware_note": "single process + TestClient + fake executor; not SOTA throughput; not a capacity plan; local free-path plumbing only",
+  "qdrant": "not dialed by this load harness",
+  "latency_ms": {
+    "p50": 4.946,
+    "p95": 7.434,
+    "min": 3.906,
+    "max": 20.564,
+    "mean": 5.465
+  }
+}

@@ -46,6 +46,13 @@ class QueryRequest(BaseModel):
             "Query embedder. 'fake' is the credential-free default and must match ingestion."
         ),
     )
+    collection: str | None = Field(
+        default=None,
+        description=(
+            "Optional collection name. When set, must match the process collection; "
+            "a mismatch is a typed wrong_collection error, not a silent cross-query."
+        ),
+    )
     filters: dict[str, str | list[str]] | None = Field(
         default=None,
         description=(
@@ -188,4 +195,24 @@ class ReadyResponse(BaseModel):
     checks: dict[str, str] = Field(
         default_factory=dict,
         description="Per-subsystem verdicts. One entry per dependency as milestones land.",
+    )
+    embedder_id: str | None = Field(
+        default=None,
+        description="Embedder that built (or is expected to build) the active collection.",
+    )
+    chunker_version: str | None = Field(
+        default=None,
+        description="Chunker identity/version stamped into collection identity.",
+    )
+    doc_count: int | None = Field(
+        default=None,
+        description="Number of source documents in the corpus identity snapshot.",
+    )
+    corpus_hash: str | None = Field(
+        default=None,
+        description="Content-addressed hash of the corpus root used for this collection.",
+    )
+    collection: str | None = Field(
+        default=None,
+        description="Configured collection name for this process.",
     )

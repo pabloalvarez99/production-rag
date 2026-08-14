@@ -62,8 +62,11 @@ from production_rag.api.sse import (
     SSEEvent,
 )
 from production_rag.config import Settings
+from production_rag.corpus_identity import WrongCollectionError
 from production_rag.generation.llm import LLMError
+from production_rag.retrieval.embeddings import EmbeddingError
 from production_rag.retrieval.filters import FilterError
+from production_rag.retrieval.store import CollectionMismatchError, VectorStoreError
 
 _log = structlog.get_logger(__name__)
 
@@ -83,6 +86,12 @@ ERROR_PIPELINE_UNAVAILABLE = "pipeline_unavailable"
 """The query pipeline is absent from this checkout — the 503 of the JSON route,
 demoted to an event because the stream was already open."""
 
+ERROR_STORE = "store_unavailable"
+"""Qdrant or the vector store is unreachable. Not a refusal."""
+
+ERROR_WRONG_COLLECTION = "wrong_collection"
+"""Caller named a collection this process does not own."""
+
 ERROR_INTERNAL = "internal_error"
 """Anything unclassified. The message is generic; the request id is the handle."""
 
@@ -91,7 +100,13 @@ def _error_type(exc: BaseException) -> str:
     """Classify a failure into the closed set a client may branch on."""
     if isinstance(exc, FilterError):
         return exc.error_type
-    if isinstance(exc, LLMError):
+    if isinstance(exc, WrongCollectionError):
+        return ERROR_WRONG_COLLECTION
+    if isinstance(exc, CollectionMismatchError):
+        return "collection_mismatch"
+    if isinstance(exc, VectorStoreError):
+        return ERROR_STORE
+    if isinstance(exc, LLMError | EmbeddingError):
         return ERROR_PROVIDER
     if isinstance(exc, QueryPipelineUnavailableError):
         return ERROR_PIPELINE_UNAVAILABLE
@@ -107,7 +122,7 @@ def _error_message(exc: BaseException) -> str:
     payload or a header, and an error body is the least controlled place in the
     system to discover that.
     """
-    if isinstance(exc, FilterError | QueryPipelineUnavailableError):
+    if isinstance(exc, FilterError | QueryPipelineUnavailableError | WrongCollectionError):
         return str(exc)
     return "The query could not be completed because a service dependency failed."
 

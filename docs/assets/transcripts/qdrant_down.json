@@ -1,0 +1,14 @@
+{
+  "method": "POST",
+  "path": "/v1/query",
+  "status": 503,
+  "body": {
+    "detail": {
+      "error_type": "store_unavailable",
+      "message": "The query could not be completed because a service dependency failed.",
+      "refused": false
+    }
+  },
+  "cache_enabled": false,
+  "note": "store failure is not a refusal"
+}

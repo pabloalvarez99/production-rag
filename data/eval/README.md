@@ -15,6 +15,22 @@ Use `golden.jsonl` with the nine-document `data/raw/sample/` corpus for fast,
 offline CI and plumbing checks. Its 17 seed items pin the schema and exercise
 the evaluator; they are not a retrieval-quality benchmark.
 
+## `golden-free-path.jsonl` (season program, n≥50)
+
+Free-path evaluation **program** for the v1.0 season. Runnable offline with
+`embedder=fake` / `llm=fake`. Slices:
+
+| Category | Intent |
+|---|---|
+| `answerable` | grounded path with expected sources |
+| `unanswerable` | correct outcome is refusal |
+| `filter` | item carries metadata `filters` that narrow evidence |
+| `hybrid-vs-dense` | lexical pressure (`rare_token` in the question) |
+
+Difficulty is enforced mechanically by
+`production_rag.evals.difficulty` against `difficulty-ranks.json`. A slice that
+is all target rank-1 fails CI — labels alone are not enough.
+
 ## `golden-corpus.jsonl`
 
 Use `golden-corpus.jsonl` with an ingest rooted at `data/corpus/`. It contains

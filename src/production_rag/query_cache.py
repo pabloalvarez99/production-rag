@@ -85,6 +85,10 @@ class CacheKey:
     embedder_id: str
     llm_id: str
     retrieval: str
+    # Corpus hash (and friends) so two corpora that share a collection *name*
+    # still cannot cross-hit. Empty string means "identity not productized yet"
+    # and remains backward-compatible with pre-season keys.
+    corpus_identity: str = ""
 
     def digest(self) -> str:
         """Fixed-length key for the map. SHA-256 of the structured fields."""
@@ -96,6 +100,7 @@ class CacheKey:
                 self.embedder_id,
                 self.llm_id,
                 self.retrieval,
+                self.corpus_identity,
             )
         )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
