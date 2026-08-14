@@ -228,9 +228,18 @@ branch.
 ### Payload indexes
 
 Keyword indexes on `doc_id`, `source`, and `tags`
-(`configs/default.yaml → qdrant.payload_indexes`). Those three are the fields
-the query API will be allowed to filter on; an unindexed filter degrades to a
-payload scan.
+(`configs/default.yaml → qdrant.payload_indexes`).
+
+What a query may filter on is a *different* list —
+`retrieval.filters.allowed_fields`, which ships as `source`, `title`, `tags`. The
+two lists answer different questions: the allowlist is a permission, the indexes
+are a cost. A field in both is O(log n); a field allowed but unindexed (`title`)
+still works and degrades to a payload scan, reported rather than silent. A field
+indexed but not allowlisted (`doc_id`) cannot be filtered on at all.
+
+**`source`, not `source_path`.** The filterable field is the first path segment
+(`sample`). The full path is `source_path`, which carries no index and is not
+filterable. [ADR 0011](adr/0011-metadata-filters.md).
 
 There is deliberately no separate metadata database: Qdrant payloads cover every
 field the query path will read.
