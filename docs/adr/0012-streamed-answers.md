@@ -87,5 +87,7 @@ worth writing.
   pre-stream validation (empty question, filter outside the allowlist) stays a
   typed 422 before the stream opens.
 - Capture regeneration for the UI is only required when chrome that appears in
-  `docs/assets/ui-*.png` changes. The stream toggle is additive chrome; the
-  grounded / refusal / filtered outcomes remain the same pipeline results.
+  the committed UI captures (`ui-grounded.png`, `ui-refusal.png`,
+  `ui-filtered.png`, and later `ui-stream.png`) changes. The stream toggle is
+  additive chrome; the grounded / refusal / filtered outcomes remain the same
+  pipeline results.
