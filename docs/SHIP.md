@@ -85,7 +85,8 @@ series ([PORTFOLIO.md](PORTFOLIO.md)).
 
 | You want to | Read |
 | --- | --- |
-| See the series and what P2 needs before it starts | [PORTFOLIO.md](PORTFOLIO.md) |
+| See all five systems and what each one does not prove | [PORTFOLIO.md](PORTFOLIO.md) |
+| Present the whole series live, minute by minute | [DEMO-DAY.md](DEMO-DAY.md) |
 | Run the checks, or send a fix | [CONTRIBUTING.md](../CONTRIBUTING.md) |
 | Report a vulnerability, or handle a leaked key | [SECURITY.md](../SECURITY.md) |
 | Read why the system is shaped this way, end to end | [CASESTUDY.md](CASESTUDY.md) |
