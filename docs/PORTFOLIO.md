@@ -4,24 +4,25 @@ Five projects, one thesis: a retrieval system is only as good as the evidence it
 for its own behaviour. Each project ships a runnable service, an evaluation harness that can
 contradict its author, and decision records for the trade-offs that were not obvious.
 
-The series is deliberately sequential. Every project reuses the previous project's core
-instead of restarting from a template, and no project starts before its entry condition is
-true. That is why exactly one of them is complete.
+The series is deliberately sequential. Each project consumes the previous project's public
+boundary instead of restarting from a template, while keeping a credential-free standalone
+path. P1 is released, P2 has reached its evaluation milestone, and P3 has a public health-only
+scaffold; later systems remain plans.
 
 ## The series
 
 | # | Project | What it adds | State |
 | --- | --- | --- | --- |
 | **P1** | **[production-rag](../README.md)** — hybrid RAG service | Hybrid dense + sparse retrieval with RRF, cross-encoder rerank, grounded answers with resolvable citations, refusal as a first-class outcome, two-tier offline evaluation with paired statistics, server-rendered query UI | **portfolio-complete on the free path**; one hosted baseline run outstanding |
-| P2 | Agentic RAG research agent | Query planning, multi-step retrieval, tool use, and a stopping rule, over P1's retrieval core rather than a new one | planned — six entry criteria below, starting with P1's hosted baseline so agent behaviour is measured against a known retrieval floor |
-| P3 | Multi-agent system | An orchestrator plus specialists, explicit handoff contracts, shared state, and failure containment between agents | planned — needs P2's single-agent trace and cost profile as its comparison baseline |
+| P2 | [agentic-rag-research](https://github.com/pabloalvarez99/agentic-rag-research) | Bounded plan/retrieve/critique loop, optional P1 HTTP retrieval, explicit stop reasons, trace, and offline goldens | **M5 LIVE**; v0.1.0 release still planned |
+| P3 | [multi-agent-orchestration](https://github.com/pabloalvarez99/multi-agent-orchestration) | Orchestrator plus Research/Critic/Writer roles, handoff budgets, isolation, degradation, timeline, API/CLI, and offline goldens | **M4 LIVE**; P2 integration/release planned |
 | P4 | RepoMind code intelligence | Change-impact answers over a repository: which artefacts a change touches, with evidence, on a corpus and golden set of its own | scoped — three preconditions before any code, chief among them a corpus where BM25 and direct neighbours provably miss the answer |
 | P5 | Full production AI platform | The hardening deliberately excluded from P1: auth, rate limits, a metrics endpoint, payload filters, retry and timeout policy, load and concurrency work | planned — the crown project; it wraps P1 through P4 rather than replacing them |
 
-**P2 through P5 are plans, not work in progress.** No code exists for any of them, no
-repository is linked, and nothing on this page should be read as a partially built system.
-Each one is stated with the entry condition that has to be true before it starts, so the
-sequence can be checked rather than trusted. P1 is the only project with something to run.
+P2 and P3 are runnable and evaluated on deterministic free paths. P3 now exposes library,
+`POST /v1/tasks`, and CLI surfaces with a timeline and 12-task routing scorecard. Its optional
+P2 integration and release remain planned. P4 and P5 remain design intent, not partial
+implementations.
 
 ## P1 — production-rag
 
@@ -73,41 +74,24 @@ the free path: ingest, the query API, both evaluation tiers, and regenerating th
   and why — including the reporting boundary that keeps a favourable-looking result from
   being announced.
 
-## P2 — Agentic RAG Research Agent: entry criteria
+## P1 → P2 → P3 boundary
 
-P2 adds a research loop on top of P1: plan a query, retrieve more than once, use a tool, decide
-when to stop, and answer with citations that survive the extra hops. It does not start because
-the idea is ready. It starts when the conditions below are true, and each one is checkable by
-someone who did not write it.
+P2 calls P1's versioned `POST /v1/query` contract through an explicit optional HTTP adapter.
+It consumes citation passages and ignores P1's generated answer, so P2 owns agent policy while
+P1 remains the retrieval substrate. The default P2 path still uses a local fixture; no running
+P1 service is required for its tests or demo.
 
-1. **P1's hosted baseline exists.** One billed run with named providers, published through the
-   same scorecard contract. Without it there is no retrieval floor, so any agent result is a
-   number with nothing to compare against.
-2. **P1 is consumed, not copied.** P2 depends on `production_rag` as an installed library — the
-   `run_query` entry point and the retrieval modules — or calls `POST /v1/query` over HTTP. A
-   forked retrieval stack is a rewrite pretending to be a series, and it would make the
-   comparison in gate 5 meaningless.
-3. **The free path runs first.** The whole loop — planning, several retrieval passes, tool
-   calls, stopping — runs end to end on the deterministic providers, with CI green while the
-   provider keys are empty strings, before a hosted call is wired in. Same rule as P1: a
-   project nobody can run without paying is not a portfolio project.
-4. **A golden set the single pass provably cannot answer.** Questions where P1's one-shot
-   retrieval demonstrably fails, established by a mechanical predicate rather than intuition:
-   the answer needs evidence from more than one document, or a fact that surfaces only after a
-   first retrieval narrows the question. A set the baseline already solves makes the agent look
-   useful by construction. This is P1's `deep_rank` lesson, a slice that passed schema
-   integrity while measuring nothing.
-5. **A paired comparison against that baseline.** Same items, same order, agent against single
-   pass, under the reporting boundary in
-   [ADR-0010](adr/0010-statistical-reporting.md): a delta becomes a claim only when its sample
-   size and interval allow it. An agent that spends more steps and wins nothing has to be
-   publishable as exactly that.
-6. **A budget and a stopping rule, both recorded.** A step ceiling and a spend ceiling per
-   question, enforced in code, with the real step count and cost in every report. An unbounded
-   agent loop is an outage with a research paper attached.
+P3 starts from P2's explicit budget and trace lessons, then moves policy into an orchestrator
+that coordinates deterministic Research, Critic, and Writer specialists. The M4 path keeps
+Writer as the sole final speaker, caps handoffs/research retries, and makes specialist failure
+degraded and visible, with a JSON-safe timeline and offline routing goldens.
 
-Out of scope for P2, stated now: multi-agent orchestration belongs to P3, and auth, rate limits
-and load work belong to P5. P2 is one agent, one loop, measured against the floor P1 set.
+Two honesty boundaries remain:
+
+- P2's 17-case fake scorecard measures deterministic contract conformance, not retrieval or
+  answer quality and not uplift over a one-pass answer baseline.
+- P3's fake specialists and goldens prove routing, ownership, budgets, and trace contracts,
+  not answer quality or multi-model uplift.
 
 ## Standards applied to every project in the series
 
