@@ -61,6 +61,12 @@ in this order:
    reason, which reads as a product decision only after the first answer proved the system
    will answer when it has evidence.
 
+![The free-path UI answering with citations, then refusing a question the corpus cannot support](docs/assets/production-rag-demo.gif)
+
+*Both outcomes, recorded from the running stack by `python scripts/record_demo.py`: fake
+embedder, fake LLM, local corpus. A plumbing demonstration, not a quality evaluation.
+Details and the stills below: [docs/demo.md](docs/demo.md).*
+
 ![Grounded answer with citations and pipeline timings](docs/assets/ui-grounded.png)
 
 ![Deliberate refusal with its reason](docs/assets/ui-refusal.png)

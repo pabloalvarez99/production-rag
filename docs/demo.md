@@ -1,7 +1,43 @@
 # Record the demo
 
-The recording target is `docs/assets/production-rag-demo.gif`. Do not add an
-image at that path until a real recording exists.
+![Grounded answer with citations, then a deliberate refusal, recorded from the running free-path stack](assets/production-rag-demo.gif)
+
+*Fake embedder, fake LLM, local corpus — a plumbing demonstration, not a quality
+evaluation.*
+
+`docs/assets/production-rag-demo.gif` is generated, not filmed:
+
+```powershell
+pip install -e ".[docs]"
+playwright install chromium
+python scripts/record_demo.py
+```
+
+`scripts/record_demo.py` reuses the pipeline in `scripts/capture_ui.py` — the same
+dedicated collection, the same fake providers, the same stabilised request id and
+timing labels — then drives the real UI at a fixed viewport, saves one PNG per
+beat, and assembles them with ffmpeg into a palette-optimised loop. It needs
+`ffmpeg` on `PATH`. Because it is a sequence of real renderings rather than a
+screen recording, there is no cursor, no window chrome, and no desktop behind it,
+and it prints the output's size and SHA-256 digest so a rerun is comparable.
+
+The six beats are the storyboard at the top of that script: the empty form, the
+grounded question being entered, the grounded answer with its citations, the
+expanded pipeline timings, the refusal question being entered, and the refusal
+with its reason. Changing the beats means editing `STORYBOARD`, not re-shooting
+by hand.
+
+If a future change makes the GIF exceed the size budget enforced by
+`tests/test_docs_assets.py`, keep the two PNG posters and commit a short webm or
+mp4 instead: `--width` lowers the resolution, and the same frame directory feeds
+any encoder ffmpeg supports. Do not solve a size problem by dropping the refusal
+beat — the refusal is the half of the recording that makes the other half mean
+something.
+
+## Record it live instead
+
+The section below is for a live walkthrough, where the point is watching a person
+drive the system rather than reading a loop.
 
 ## Prepare
 
