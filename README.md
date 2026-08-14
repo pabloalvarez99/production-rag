@@ -1,5 +1,13 @@
 # production-rag
 
+<p align="center">
+  <a href="https://github.com/pabloalvarez99/production-rag"><img src="https://img.shields.io/badge/1%2F5-production--rag-0ea5e9" alt="P1" /></a>
+  <a href="https://github.com/pabloalvarez99/agentic-rag-research"><img src="https://img.shields.io/badge/2%2F5-agentic--rag-a78bfa" alt="P2" /></a>
+  <a href="https://github.com/pabloalvarez99/multi-agent-orchestration"><img src="https://img.shields.io/badge/3%2F5-multi--agent-22c55e" alt="P3" /></a>
+  <a href="https://github.com/pabloalvarez99/repomind"><img src="https://img.shields.io/badge/4%2F5-repomind-f59e0b" alt="P4" /></a>
+  <img src="https://img.shields.io/badge/5%2F5-ai--platform-6b7280" alt="P5 planned" />
+</p>
+
 A production-shaped RAG service: hybrid retrieval in Qdrant, cross-encoder reranking,
 answers that cite the exact chunks they used, an explicit refusal when the evidence is
 absent, and a two-tier offline evaluation harness with paired statistics.
