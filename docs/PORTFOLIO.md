@@ -16,13 +16,14 @@ scaffold; later systems remain plans.
 | **P1** | **[production-rag](../README.md)** — hybrid RAG service | Hybrid dense + sparse retrieval with RRF, cross-encoder rerank, grounded answers with resolvable citations, refusal as a first-class outcome, two-tier offline evaluation with paired statistics, server-rendered query UI | **portfolio-complete on the free path**; one hosted baseline run outstanding |
 | P2 | [agentic-rag-research](https://github.com/pabloalvarez99/agentic-rag-research) | Bounded plan/retrieve/critique loop, optional P1 HTTP retrieval, explicit stop reasons, trace, and offline goldens | **M5 LIVE**; v0.1.0 release still planned |
 | P3 | [multi-agent-orchestration](https://github.com/pabloalvarez99/multi-agent-orchestration) | Orchestrator plus Research/Critic/Writer roles, handoff budgets, isolation, degradation, timeline, API/CLI, and offline goldens | **M4 LIVE**; P2 integration/release planned |
-| P4 | RepoMind code intelligence | Change-impact answers over a repository: which artefacts a change touches, with evidence, on a corpus and golden set of its own | scoped — three preconditions before any code, chief among them a corpus where BM25 and direct neighbours provably miss the answer |
+| P4 | [RepoMind](https://github.com/pabloalvarez99/repomind) | Safe repository walk, Python AST chunks, deterministic symbol/token retrieval, and grounded `path:line` answers or refusal | **M3 LIVE**; CLI and fixture evals planned |
 | P5 | Full production AI platform | The hardening deliberately excluded from P1: auth, rate limits, a metrics endpoint, payload filters, retry and timeout policy, load and concurrency work | planned — the crown project; it wraps P1 through P4 rather than replacing them |
 
 P2 and P3 are runnable and evaluated on deterministic free paths. P3 now exposes library,
 `POST /v1/tasks`, and CLI surfaces with a timeline and 12-task routing scorecard. Its optional
-P2 integration and release remain planned. P4 and P5 remain design intent, not partial
-implementations.
+P2 integration and release remain planned. RepoMind M3 is runnable against its committed
+fixture; its CLI and evaluation harness remain planned. P5 remains design intent, not a
+partial implementation.
 
 ## P1 — production-rag
 
