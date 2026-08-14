@@ -7,6 +7,7 @@ the map actually works when the key is complete.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -26,7 +27,7 @@ from production_rag.query_cache import (
 
 
 @pytest.fixture(autouse=True)
-def _clean_cache() -> None:
+def _clean_cache() -> Iterator[None]:
     reset_query_cache()
     yield
     reset_query_cache()

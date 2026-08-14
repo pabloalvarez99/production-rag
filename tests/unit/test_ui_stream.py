@@ -88,7 +88,11 @@ def _refusal() -> QueryResponse:
 
 
 def _post(client: TestClient, body: str = f"question={QUESTION}") -> httpx.Response:
-    return client.post("/ui/query/stream", headers=FORM_HEADERS, content=body)
+    # Cast: some envs type TestClient responses as httpx2 while stubs say httpx.
+    return cast(
+        httpx.Response,
+        client.post("/ui/query/stream", headers=FORM_HEADERS, content=body),
+    )
 
 
 def _frames(body: bytes) -> list[tuple[str, dict[str, str]]]:
