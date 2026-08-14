@@ -2,8 +2,9 @@
 
 ## Supported versions
 
-There are no tagged releases. Only the tip of `main` is supported; fixes land there and are
-not backported.
+The latest tagged release and the tip of `main` are supported. Security fixes land on
+`main`; backports are not guaranteed. See the
+[release history](https://github.com/pabloalvarez99/production-rag/releases).
 
 ## Never put a credential in this repository
 

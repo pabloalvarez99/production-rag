@@ -3,6 +3,10 @@
 How a retrieval-augmented question-answering service was built so that a stranger can clone
 it, run the whole path for free, and check every claim it makes about itself.
 
+The verified runtime snapshot is published as
+[v0.1.0](https://github.com/pabloalvarez99/production-rag/releases/tag/v0.1.0). This case
+study documents that release and was added to `main` immediately afterward.
+
 ## The constraints that shaped it
 
 Four constraints were fixed before any code, and every trade-off below follows from them.

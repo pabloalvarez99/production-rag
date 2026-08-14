@@ -1,6 +1,7 @@
 # Ship notes
 
-**Status: the free path is public-ready.** A reviewer clones this repository and reaches a
+**Status: [v0.1.0](https://github.com/pabloalvarez99/production-rag/releases/tag/v0.1.0)
+is published and the free path is public-ready.** A reviewer clones this repository and reaches a
 cited answer without an account, a credential, or a billed call. One item is deliberately
 open — a hosted-provider baseline run — and it is stated wherever a number appears rather
 than hidden.
