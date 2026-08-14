@@ -44,7 +44,7 @@ class Settings(BaseSettings):
 
     # --- application identity -------------------------------------------------
     app_name: str = "production-rag"
-    app_version: str = "0.2.0"
+    app_version: str = "0.3.0"
     environment: str = "local"
     log_level: str = "INFO"
     api_prefix: str = "/v1"

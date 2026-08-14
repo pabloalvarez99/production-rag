@@ -73,15 +73,18 @@ Details and the stills below: [docs/demo.md](docs/demo.md).*
 
 ![Deliberate refusal with its reason](docs/assets/ui-refusal.png)
 
+![Stream toggle on — same grounded contract after provisional deltas](docs/assets/ui-stream.png)
+
 ![Service dependency failure rendered in the UI](docs/assets/ui-service-failure.png)
 
-Those three captures are generated from the running stack, not hand-taken:
+Those captures are generated from the running stack, not hand-taken:
 `pip install -e ".[docs]"`, `playwright install chromium`, then `python scripts/capture_ui.py`.
-The script fixes the viewport, questions, collection, providers, request-id label and timing
-labels, so identical app and browser inputs produce byte-identical PNGs, and it prints each
-SHA-256 digest for a second-run comparison. A change to the templates or the stylesheet
-refreshes these files in the same pull request, so a stale capture is provable rather than
-arguable.
+Every still keeps the **Stream the draft** toggle visible; `ui-stream.png` is the grounded
+question with the toggle checked. The script fixes the viewport, questions, collection,
+providers, request-id label and timing labels, so identical app and browser inputs produce
+byte-identical PNGs, and it prints each SHA-256 digest for a second-run comparison. A change
+to the templates or the stylesheet refreshes these files in the same pull request, so a
+stale capture is provable rather than arguable.
 
 ### 2. Ingest and query without the UI
 
@@ -312,7 +315,7 @@ retrieval core instead of restarting it. Full index: [docs/PORTFOLIO.md](docs/PO
 
 | # | Project | What it adds | State |
 | --- | --- | --- | --- |
-| **P1** | **production-rag** (this repository) | Hybrid retrieval, rerank, grounded citations, refusal, stream, filter-aware cache, two-tier evaluation | v0.2.0 clone-only free path; no hosted URL; one hosted baseline outstanding |
+| **P1** | **production-rag** (this repository) | Hybrid retrieval, rerank, grounded citations, refusal, stream, filter-aware cache, two-tier evaluation | v0.3.0 clone-only free path; no hosted URL; one hosted baseline outstanding |
 | P2 | [agentic-rag-research](https://github.com/pabloalvarez99/agentic-rag-research) | Bounded plan → retrieve → critique loop, tools, stop reasons, traces over this retrieval core | v0.1.0 live |
 | P3 | [multi-agent-orchestration](https://github.com/pabloalvarez99/multi-agent-orchestration) | Orchestrator plus specialists, handoff budgets, degraded outcomes, timeline | v0.1.0 live |
 | P4 | [repomind](https://github.com/pabloalvarez99/repomind) | AST-aware code chunks and `path:line` answers over a repository, with its own fixture eval | v0.1.0 live |

@@ -41,6 +41,7 @@ CAPTURES = {
     "grounded": ASSETS / "ui-grounded.png",
     "filtered": ASSETS / "ui-filtered.png",
     "refused": ASSETS / "ui-refusal.png",
+    "stream": ASSETS / "ui-stream.png",
     "error": ASSETS / "ui-service-failure.png",
 }
 
@@ -68,30 +69,97 @@ def _submit(
     *,
     filter_field: str = "",
     filter_value: str = "",
+    stream: bool = False,
 ) -> None:
     page.goto(BASE_URL, wait_until="networkidle")
+    # The stream toggle must be in every still: a hiring manager needs to see
+    # that streaming is an opt-in on the same form, not a separate demo app.
+    page.locator("#stream").wait_for(state="visible")
     page.locator("#question").fill(question)
     if filter_field:
         # Set through the controls a reviewer uses, so the capture shows the
         # filter that produced the answer rather than only its result.
         page.locator("#filter-field").select_option(filter_field)
         page.locator("#filter-value").fill(filter_value)
-    page.evaluate(
-        """async ({question, filterField, filterValue}) => {
-            const body = new URLSearchParams({
-                question,
-                filter_field: filterField,
-                filter_value: filterValue,
-            });
-            const response = await fetch('/ui/query', {
-                method: 'POST',
-                headers: {'content-type': 'application/x-www-form-urlencoded'},
-                body,
-            });
-            document.querySelector('#result').innerHTML = await response.text();
-        }""",
-        {"question": question, "filterField": filter_field, "filterValue": filter_value},
-    )
+    if stream:
+        page.locator("#stream").check()
+        page.evaluate(
+            """async ({question, filterField, filterValue}) => {
+                const body = new URLSearchParams({
+                    question,
+                    filter_field: filterField,
+                    filter_value: filterValue,
+                });
+                const result = document.querySelector('#result');
+                const response = await fetch('/ui/query/stream', {
+                    method: 'POST',
+                    headers: {'content-type': 'application/x-www-form-urlencoded'},
+                    body,
+                });
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                while (true) {
+                    const {value, done} = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, {stream: true});
+                    const frames = buffer.split('\\n\\n');
+                    buffer = frames.pop() || '';
+                    for (const frame of frames) {
+                        let name = '';
+                        let data = '';
+                        for (const line of frame.split('\\n')) {
+                            if (line.startsWith('event: ')) name = line.slice(7);
+                            else if (line.startsWith('data: ')) data = line.slice(6);
+                        }
+                        if (name === 'delta' && data) {
+                            const payload = JSON.parse(data);
+                            if (!result.querySelector('[data-outcome="drafting"]')) {
+                                const open =
+                                    '<article class="outcome outcome-draft" '
+                                    + 'data-outcome="drafting">';
+                                result.innerHTML = open
+                                    + '<p class="outcome-label">Draft · not verified</p>'
+                                    + '<h2>The model is still writing</h2>'
+                                    + '<div class="draft-text"></div></article>';
+                            }
+                            const draft = result.querySelector('.draft-text');
+                            if (draft) draft.textContent += payload.text || '';
+                        } else if (name === 'result' && data) {
+                            const payload = JSON.parse(data);
+                            result.innerHTML = payload.html || '';
+                        }
+                    }
+                }
+            }""",
+            {
+                "question": question,
+                "filterField": filter_field,
+                "filterValue": filter_value,
+            },
+        )
+    else:
+        page.locator("#stream").uncheck()
+        page.evaluate(
+            """async ({question, filterField, filterValue}) => {
+                const body = new URLSearchParams({
+                    question,
+                    filter_field: filterField,
+                    filter_value: filterValue,
+                });
+                const response = await fetch('/ui/query', {
+                    method: 'POST',
+                    headers: {'content-type': 'application/x-www-form-urlencoded'},
+                    body,
+                });
+                document.querySelector('#result').innerHTML = await response.text();
+            }""",
+            {
+                "question": question,
+                "filterField": filter_field,
+                "filterValue": filter_value,
+            },
+        )
     page.locator(f'[data-outcome="{outcome}"]').wait_for(state="visible")
 
 
@@ -101,6 +169,13 @@ def _stabilize_dynamic_diagnostics(page: Page) -> None:
     timings = page.locator(".diagnostics dd")
     for index in range(timings.count()):
         timings.nth(index).evaluate("node => node.textContent = 'measured'")
+
+
+def _open_timings_if_present(page: Page) -> None:
+    """Expand pipeline timings when the fragment includes them (debug on)."""
+    details = page.locator(".diagnostics details")
+    if details.count() > 0:
+        details.first.evaluate("node => { node.open = true }")
 
 
 def _capture(page: Page, name: str) -> None:
@@ -130,11 +205,18 @@ def capture(*, keep_stack: bool) -> None:
             "OPENAI_API_KEY": "",
             "COHERE_API_KEY": "",
             "QDRANT_API_KEY": "",
+            # Captures must exercise the live pipeline. Compose defaults
+            # CACHE_ENABLED=true for demos; a hit after Qdrant is stopped would
+            # forge a grounded still instead of the dependency-failure render.
+            "CACHE_ENABLED": "false",
         }
     )
     ASSETS.mkdir(parents=True, exist_ok=True)
     try:
         _run("docker", "compose", "up", "-d", "--build", "qdrant", env=env)
+        # Rebuild api every capture run: templates/static live in the image, so a
+        # stale layer would document yesterday's UI without failing any hash.
+        _run("docker", "compose", "build", "api", env=env)
         _run(
             "docker",
             "compose",
@@ -163,7 +245,9 @@ def capture(*, keep_stack: bool) -> None:
             page = browser.new_page(viewport={"width": 1440, "height": 1100}, device_scale_factor=1)
 
             _submit(page, GROUNDED_QUESTION, "grounded")
-            page.locator(".diagnostics details").evaluate("details => details.open = true")
+            _open_timings_if_present(page)
+            if not page.locator("#stream").is_visible():
+                raise RuntimeError("stream toggle must be visible in grounded capture")
             _capture(page, "grounded")
 
             _submit(
@@ -173,6 +257,8 @@ def capture(*, keep_stack: bool) -> None:
                 filter_field=FILTER_FIELD,
                 filter_value=FILTER_VALUE,
             )
+            if not page.locator("#stream").is_visible():
+                raise RuntimeError("stream toggle must be visible in filtered capture")
             _capture(page, "filtered")
 
             _submit(page, REFUSAL_QUESTION, "refused")
@@ -180,7 +266,18 @@ def capture(*, keep_stack: bool) -> None:
                 raise RuntimeError(
                     "refusal evidence requires configs/default.yaml score_threshold: 0.0"
                 )
+            if not page.locator("#stream").is_visible():
+                raise RuntimeError("stream toggle must be visible in refusal capture")
             _capture(page, "refused")
+
+            # Stream beat: same grounded question, toggle on. Terminal fragment is
+            # the grounded outcome; the still shows the checked toggle so a
+            # reviewer sees streaming without a second app.
+            _submit(page, GROUNDED_QUESTION, "grounded", stream=True)
+            _open_timings_if_present(page)
+            if not page.locator("#stream").is_checked():
+                raise RuntimeError("stream capture requires the stream toggle checked")
+            _capture(page, "stream")
 
             _run("docker", "compose", "stop", "qdrant", env=env)
             _submit(page, GROUNDED_QUESTION, "error")

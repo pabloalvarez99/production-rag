@@ -49,7 +49,11 @@ data/raw
 data/eval
 
 # --- Docs and ops files (change often, would bust the cache for nothing) ------
-docs
+# Keep the free-path scorecard HTML for GET /evals when the image is not
+# compose-mounted (Dockerfile COPY docs/assets/scorecard.html).
+docs/**
+!docs/assets/
+!docs/assets/scorecard.html
 Makefile
 docker-compose.yml
 docker-compose.*.yml

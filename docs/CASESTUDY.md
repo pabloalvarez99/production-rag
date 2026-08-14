@@ -119,6 +119,18 @@ seam: the null tracer is the default, Langfuse is opt-in, an optional OTel conso
 sits behind `PRAG_OTEL_CONSOLE` (off in CI), and a trace failure never fails a request.
 [ADR-0002](adr/0002-langgraph-query.md), [ADR-0006](adr/0006-observability.md).
 
+**Stream is extra, not a replacement for `POST /v1/query`.** Reviewers wait on a blank
+panel and ask for tokens. The wrong answer is to replace the JSON contract with a stream,
+or to treat every provisional token as "the answer". Citation validation and refusal run
+*after* generation against the full text ([ADR-0005](adr/0005-grounded-generation.md));
+text that has not passed that gate is provisional. So `POST /v1/query` stays the contract,
+and `POST /v1/query/stream` is additive SSE: `meta` → provisional `delta`s → one terminal
+`result` that carries the same body the JSON route would have returned (grounded **or**
+refused). A provider outage is an `error` event with `refused: false`, never a soft
+refusal. One pipeline is teed (`StreamingTee`); the stream route does not re-implement
+retrieval or guardrails. The UI draft is labelled **Draft · not verified** and is
+replaced wholesale when `result` arrives. [ADR-0012](adr/0012-streamed-answers.md).
+
 **Allowlist filters fail closed — and the sample corpus needs `title=Filtering`.**
 `retrieval.filters.allowed_fields` is not decoration: a field outside the list is rejected
 with 422 / `filter_not_allowed` before any embed or search runs, never dropped while the
@@ -128,9 +140,15 @@ JSON body field. The free demo's visible filter beat uses **`title=Filtering`**,
 corpus path, filtering by `source=sample` does not narrow the way a reviewer expects
 because the points that power the demo are not labelled so that `source=sample` selects a
 strict subset of the filtering document. The committed capture and the UI chip therefore
-use the title that actually isolates `qdrant/search/filtering.md`. An unfiltered and a
-filtered answer to the same question are different cache keys for the same reason — a
-filtered answer must never serve an unfiltered query. [ADR-0011](adr/0011-metadata-filters.md),
+use the title that actually isolates `qdrant/search/filtering.md`.
+
+**Cache keys include filters for the same honesty reason.** The in-process result cache is
+**off by default** (`CACHE_ENABLED` / config for local demos only). When on, the key is
+`(collection, query, filters, embedder id, llm id, retrieval fingerprint)`. Filters are
+not optional decoration on the key: an unfiltered answer must never serve a filtered
+query (or the reverse). A second identical replay records `cache: hit` under debug; a
+filter mismatch is a miss even when the question text matches.
+[ADR-0011](adr/0011-metadata-filters.md),
 [ADR-0013](adr/0013-filter-aware-query-cache.md).
 
 ## How it is measured, and what that does not prove

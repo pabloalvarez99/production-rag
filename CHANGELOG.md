@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-14
+
+### Added
+
+- `docs/assets/ui-stream.png` — grounded still with **Stream the draft** checked; capture
+  script regenerates all UI stills with the stream toggle visible.
+- Scorecard replay contract tests: free-path golden items through `/v1/query` and
+  `/v1/query/stream`; unanswerable refuses; grounded keeps markers; cache hit on second
+  replay when enabled.
+- CASESTUDY sections: why stream is additive; why cache keys include filters.
+
 ## [0.2.0] - 2026-08-14
 
 ### Added
@@ -64,6 +75,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - There is no hosted-provider baseline, production retry or circuit-breaker policy,
   metrics endpoint, multi-tenancy, or load/concurrency claim.
 
-[Unreleased]: https://github.com/pabloalvarez99/production-rag/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/pabloalvarez99/production-rag/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/pabloalvarez99/production-rag/releases/tag/v0.3.0
 [0.2.0]: https://github.com/pabloalvarez99/production-rag/releases/tag/v0.2.0
 [0.1.0]: https://github.com/pabloalvarez99/production-rag/releases/tag/v0.1.0
