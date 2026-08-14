@@ -298,11 +298,14 @@ retrieval core instead of restarting it. Full index: [docs/PORTFOLIO.md](docs/PO
 
 | # | Project | What it adds | State |
 | --- | --- | --- | --- |
-| **P1** | **production-rag** (this repository) | Hybrid retrieval, rerank, grounded citations, refusal, two-tier evaluation | complete; one hosted baseline outstanding |
-| P2 | Agentic RAG research agent | Query planning, multi-step retrieval and tool use over this retrieval core | planned |
-| P3 | Multi-agent system | Orchestrator plus specialists, explicit handoff contracts, shared state | planned |
-| P4 | RepoMind code intelligence | Change-impact answers over a repository, with its own corpus and golden set | scoped |
-| P5 | Full production AI platform | Auth, rate limits, a metrics endpoint, payload filters, load and concurrency work | planned |
+| **P1** | **production-rag** (this repository) | Hybrid retrieval, rerank, grounded citations, refusal, two-tier evaluation | v0.1.0 live; one hosted baseline outstanding |
+| P2 | [agentic-rag-research](https://github.com/pabloalvarez99/agentic-rag-research) | Bounded plan → retrieve → critique loop, tools, stop reasons, traces over this retrieval core | v0.1.0 live |
+| P3 | [multi-agent-orchestration](https://github.com/pabloalvarez99/multi-agent-orchestration) | Orchestrator plus specialists, handoff budgets, degraded outcomes, timeline | v0.1.0 live |
+| P4 | [repomind](https://github.com/pabloalvarez99/repomind) | AST-aware code chunks and `path:line` answers over a repository, with its own fixture eval | v0.1.0 live |
+| P5 | [ai-platform](https://github.com/pabloalvarez99/ai-platform) | The operational edge kept out of this repository: gateway authentication, rate limits, request IDs, prefix proxying, status | v0.1.0 live as a gateway; **no** upstream configured, so it does not host P1–P4 |
+
+All five carry a `v0.1.0` tag and a green CI badge. Reviewing them in one sitting:
+[docs/DEMO-DAY.md](docs/DEMO-DAY.md), a minute-boxed forty-five-minute free-path script.
 
 Explicit non-goals for the current release:
 

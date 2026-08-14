@@ -14,12 +14,17 @@ no API key, no billed call, and no signup.
 | # | System | Engineering focus | Status |
 | --- | --- | --- | --- |
 | 1 | [production-rag](https://github.com/pabloalvarez99/production-rag) | Hybrid dense + sparse retrieval, RRF, optional rerank, grounded citations or refusal, offline evals, UI | **LIVE — v0.1.0** |
-| 2 | [agentic-rag-research](https://github.com/pabloalvarez99/agentic-rag-research) | Bounded plan → retrieve → critique loop, tools, explicit stop reasons, deterministic traces | **LIVE THROUGH M2** — API/CLI next |
-| 3 | `multi-agent-orchestration` | Orchestrator, specialist handoffs, isolation, budgets, timelines | **PLANNED** |
-| 4 | `repomind` | AST-aware code chunks, `path:line` citations, fixture-backed evals | **PLANNED** |
-| 5 | `ai-platform` | Gateway auth, rate limits, multi-service compose, aggregate health | **PLANNED** |
+| 2 | [agentic-rag-research](https://github.com/pabloalvarez99/agentic-rag-research) | Bounded plan → retrieve → critique loop, tools, explicit stop reasons, deterministic traces | **LIVE — v0.1.0** |
+| 3 | [multi-agent-orchestration](https://github.com/pabloalvarez99/multi-agent-orchestration) | Orchestrator, specialist handoffs, isolation, budgets, timelines, Writer-only final output | **LIVE — v0.1.0** |
+| 4 | [repomind](https://github.com/pabloalvarez99/repomind) | AST-aware code chunks, `path:line` citations, fixture-backed evals | **LIVE — v0.1.0** |
+| 5 | [ai-platform](https://github.com/pabloalvarez99/ai-platform) | Gateway API-key auth, per-key rate limits, request IDs, prefix proxying, status console | **LIVE — v0.1.0, gateway only** |
 
-Rows 3–5 describe the roadmap, not shipped repositories.
+All five are public repositories carrying a `v0.1.0` tag and a green CI badge. Row 5 is the
+one that needs its qualifier read: what runs for free is the **gateway process by itself**.
+It authenticates, throttles, stamps request IDs, and reports status with **no** upstream
+configured — it does not host systems 1–4, and no deployment exists where a request through
+it reaches a running one. Proxying is implemented against a tested prefix contract; supplying
+real upstreams is the reviewer's configuration, not a service I operate.
 
 ## Start here — free, local, reproducible
 
@@ -29,9 +34,22 @@ Rows 3–5 describe the roadmap, not shipped repositories.
 - **[agentic-rag-research](https://github.com/pabloalvarez99/agentic-rag-research#readme):**
   run the deterministic research loop and inspect its evidence, step budget, stop reason,
   and complete trace without a hosted model.
+- **[multi-agent-orchestration](https://github.com/pabloalvarez99/multi-agent-orchestration#readme):**
+  send one task to an orchestrator, watch the handoff timeline, and see a specialist failure
+  come back as a typed degraded outcome instead of a crash or a silent guess.
+- **[repomind](https://github.com/pabloalvarez99/repomind#readme):** ask a question about a
+  repository and get an answer whose citations are `path:line` pairs you can open — or a
+  refusal when the walk found nothing that supports one.
+- **[ai-platform](https://github.com/pabloalvarez99/ai-platform#readme):** start the gateway
+  alone and get rejected without a key, throttled with one, and a status console that reports
+  its upstreams as unconfigured.
 
 The free-provider metrics prove data flow, contracts, and reproducibility. They are not
 presented as hosted retrieval or answer-quality results.
+
+Reviewing all five in one sitting:
+[DEMO-DAY.md](https://github.com/pabloalvarez99/production-rag/blob/main/docs/DEMO-DAY.md)
+is a minute-boxed forty-five-minute script covering every system on the free path.
 
 ## Flagship: production-rag
 
@@ -58,14 +76,14 @@ trace that remains available whether the run completes, exhausts its budget, or 
 
 ## Suggested GitHub pins
 
-Pin these in order as the series ships:
+All six repositories are public; pin them in this order:
 
 1. [production-rag](https://github.com/pabloalvarez99/production-rag)
 2. [agentic-rag-research](https://github.com/pabloalvarez99/agentic-rag-research)
-3. [paxdev](https://github.com/pabloalvarez99/paxdev)
-4. `multi-agent-orchestration` when public
-5. `repomind` when public
-6. `ai-platform` when public
+3. [multi-agent-orchestration](https://github.com/pabloalvarez99/multi-agent-orchestration)
+4. [repomind](https://github.com/pabloalvarez99/repomind)
+5. [ai-platform](https://github.com/pabloalvarez99/ai-platform)
+6. [paxdev](https://github.com/pabloalvarez99/paxdev)
 
 GitHub profile pins are configured in the web UI; copying this README does not pin the
 repositories automatically.

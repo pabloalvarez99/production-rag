@@ -6,23 +6,35 @@ contradict its author, and decision records for the trade-offs that were not obv
 
 The series is deliberately sequential. Each project consumes the previous project's public
 boundary instead of restarting from a template, while keeping a credential-free standalone
-path. P1 is released, P2 has reached its evaluation milestone, P3 has reached its traced
-API/evaluation milestone, and RepoMind answers fixture-backed code questions; P5 remains a plan.
+path. **All five systems are public repositories with a `v0.1.0` tag.** What differs between
+them is not whether they shipped, but how much of each system a reviewer can exercise for
+free — which each row below states rather than implies.
 
 ## The series
 
 | # | Project | What it adds | State |
 | --- | --- | --- | --- |
-| **P1** | **[production-rag](../README.md)** — hybrid RAG service | Hybrid dense + sparse retrieval with RRF, cross-encoder rerank, grounded answers with resolvable citations, refusal as a first-class outcome, two-tier offline evaluation with paired statistics, server-rendered query UI | **portfolio-complete on the free path**; one hosted baseline run outstanding |
-| P2 | [agentic-rag-research](https://github.com/pabloalvarez99/agentic-rag-research) | Bounded plan/retrieve/critique loop, optional P1 HTTP retrieval, explicit stop reasons, trace, UI, local notes tool, and offline goldens | **v0.1.0 / M6 LIVE** |
-| P3 | [multi-agent-orchestration](https://github.com/pabloalvarez99/multi-agent-orchestration) | Orchestrator plus Research/Critic/Writer roles, handoff budgets, isolation, degradation, timeline, API/CLI, and offline goldens | **M4 LIVE**; P2 integration/release planned |
-| P4 | [RepoMind](https://github.com/pabloalvarez99/repomind) | Safe repository walk, Python AST chunks, deterministic symbol/token retrieval, and grounded `path:line` answers or refusal | **M5 LIVE**; JSON CLI and 14-case fixture eval |
-| P5 | Full production AI platform | The hardening deliberately excluded from P1: auth, rate limits, a metrics endpoint, payload filters, retry and timeout policy, load and concurrency work | planned — the crown project; it wraps P1 through P4 rather than replacing them |
+| **P1** | **[production-rag](https://github.com/pabloalvarez99/production-rag)** — hybrid RAG service | Hybrid dense + sparse retrieval with RRF, cross-encoder rerank, grounded answers with resolvable citations, refusal as a first-class outcome, two-tier offline evaluation with paired statistics, server-rendered query UI | **v0.1.0 LIVE** on the free path; one hosted baseline run outstanding |
+| P2 | [agentic-rag-research](https://github.com/pabloalvarez99/agentic-rag-research) | Bounded plan/retrieve/critique loop, optional P1 HTTP retrieval, explicit stop reasons, trace, UI, local notes tool, and offline goldens | **v0.1.0 LIVE** |
+| P3 | [multi-agent-orchestration](https://github.com/pabloalvarez99/multi-agent-orchestration) | Orchestrator plus Research/Critic/Writer roles, handoff budgets, isolation, degradation, timeline, API/CLI, and offline goldens | **v0.1.0 LIVE**; optional P2 integration behind `AGENTIC_RAG_URL` |
+| P4 | [RepoMind](https://github.com/pabloalvarez99/repomind) | Safe repository walk, Python AST chunks, deterministic symbol/token retrieval, and grounded `path:line` answers or refusal | **v0.1.0 LIVE**; JSON CLI and fixture eval |
+| P5 | [ai-platform](https://github.com/pabloalvarez99/ai-platform) | The operational edge deliberately excluded from P1: API-key authentication, per-key rate limits, request IDs, bounded prefix proxying, guardrails, status console | **v0.1.0 LIVE as a gateway**; upstreams unconfigured on the free path |
+
+Read the P5 row precisely. What is live is the **gateway process**: a reviewer can start it
+alone, be rejected without a key, be throttled with one, and read a status console that
+reports its configured upstreams. It does **not** host or bundle P1 through P4 — no
+deployment exists where a request to P5 reaches a running P1. Proxying is implemented and
+tested against the prefix contract; pointing it at real upstreams is configuration a
+reviewer supplies, not a service this portfolio operates.
 
 P2 and P3 are runnable and evaluated on deterministic free paths. P3 exposes library,
-`POST /v1/tasks`, and CLI surfaces with a timeline and 12-task routing scorecard. Optional
-P2 integration and a P3 release remain planned. RepoMind M5 includes the JSON CLI and the
-14-case fixture eval. P5 remains design intent, not a partial implementation.
+`POST /v1/tasks`, and CLI surfaces with a timeline and a routing scorecard. RepoMind ships
+the JSON CLI and its fixture eval. A tag means the surface is real and CI-verified; it does
+not mean the numbers behind it are hosted-quality results, and every repository says which
+of the two it is publishing.
+
+Walk the whole series in front of a reviewer with [DEMO-DAY.md](DEMO-DAY.md): a
+minute-boxed script that runs all five systems on the free path in forty-five minutes.
 
 ## P1 — production-rag
 
@@ -86,12 +98,22 @@ that coordinates deterministic Research, Critic, and Writer specialists. The M4 
 Writer as the sole final speaker, caps handoffs/research retries, and makes specialist failure
 degraded and visible, with a JSON-safe timeline and offline routing goldens.
 
-Two honesty boundaries remain:
+P4 leaves the prose corpus entirely: it walks a repository, chunks Python by AST, and answers
+with `path:line` citations or refuses. P5 sits in front of the series rather than inside it —
+an authenticating, rate-limiting, request-id-stamping edge that proxies by prefix. It is the
+hardening P1 deliberately excluded, kept in its own repository so that P1's demo never needs a
+key to run.
 
-- P2's 17-case fake scorecard measures deterministic contract conformance, not retrieval or
+Four honesty boundaries remain:
+
+- P2's fake scorecard measures deterministic contract conformance, not retrieval or
   answer quality and not uplift over a one-pass answer baseline.
 - P3's fake specialists and goldens prove routing, ownership, budgets, and trace contracts,
   not answer quality or multi-model uplift.
+- P4's fixture eval proves citation resolution and refusal on a fixed repository snapshot,
+  not general code comprehension.
+- P5's tag proves the edge behaves — rejects, throttles, stamps, and reports — not that
+  anything is deployed behind it.
 
 ## Standards applied to every project in the series
 
