@@ -128,11 +128,11 @@ every citation from `01-hybrid-search.md` and the narrowing named in the result 
 
 ## Refresh the still captures
 
-`docs/assets/ui-grounded.png`, `ui-filtered.png`, `ui-refusal.png` and
-`ui-service-failure.png` come
-from `python scripts/capture_ui.py`, after `pip install -e ".[docs]"` and
-`playwright install chromium`. That script drives the same credential-free stack
-these setup scripts start — fake providers, local corpus, no key — so refreshing the
-images costs only the time it takes to run. Rebuild the API image first
-(`docker compose build api`): the Dockerfile copies `src/` in, so a capture against a
-stale image silently documents the previous UI and prints unchanged digests.
+`docs/assets/ui-grounded.png`, `ui-filtered.png`, `ui-refusal.png`, `ui-stream.png`
+and `ui-service-failure.png` come from `python scripts/capture_ui.py`, after
+`pip install -e ".[docs]"` and `playwright install chromium`. Every still includes the
+**Stream the draft** toggle so a reviewer sees streaming as opt-in chrome on the same
+form. `ui-stream.png` is the grounded question with that toggle checked (terminal
+fragment after deltas). Rebuild the API image first (`docker compose build api`): the
+Dockerfile copies `src/` in, so a capture against a stale image silently documents the
+previous UI and prints unchanged digests.

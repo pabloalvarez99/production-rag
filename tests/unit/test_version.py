@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from production_rag import __version__
 from production_rag.config import Settings
 
-EXPECTED_VERSION = "0.2.0"
+EXPECTED_VERSION = "0.3.0"
 PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
 
 
