@@ -19,6 +19,7 @@ from production_rag.observability.tracer import (
     Span,
     Tracer,
     build_tracer,
+    configure_otel_console_exporter,
     guarded_span,
     span_attributes,
 )
@@ -339,3 +340,10 @@ class TestObservabilityConfig:
         config = YamlConfig()
         assert config.observability.tracing.sample_rate == 1.0
         assert config.observability.metrics.path == "/metrics"
+
+    def test_otel_console_exporter_stays_off_without_the_env_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # CI is empty on purpose: no PRAG_OTEL_CONSOLE, no console spam.
+        monkeypatch.delenv("PRAG_OTEL_CONSOLE", raising=False)
+        assert configure_otel_console_exporter() is False

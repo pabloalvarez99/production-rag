@@ -6,6 +6,13 @@ networked dependency in this project sits behind a Protocol with a deterministic
 offline implementation, so the unit suite is green with the wifi off and nobody
 needs a credential to run the pipeline end to end.
 
+Both also implement
+:class:`~production_rag.generation.streaming.StreamingLLM`, which hands the same
+completion over in pieces. That is an addition to this seam, never a fork of it:
+:meth:`LLM.complete` stays the method the graph, the CLI and the evals call, and
+streaming changes what a *transport* can show a user while waiting, not what the
+pipeline decides to serve.
+
 * :class:`FakeLLM` — extractive, deterministic, offline. It reads the numbered
   context blocks back out of the prompt it was handed and answers with the
   leading sentence of each, carrying the matching ``[n]`` marker; with no blocks
@@ -26,7 +33,7 @@ and "the pipeline refused" stay one decision made in one place.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -76,6 +83,26 @@ FAKE_MODEL = "fake-extractive-v1"
 """Recorded in the result, so an eval row can never be mistaken for a real run."""
 
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def fake_chunks(text: str) -> tuple[str, ...]:
+    """Split *text* the way :meth:`FakeLLM.stream` does. One word per chunk.
+
+    The rule is stated here, in one function, because it is a **fixture**: the
+    streaming tests assert the exact byte sequence a client receives, and a test
+    that asserts bytes needs the bytes to be decided somewhere a reader can
+    check rather than emerge from a provider's tokenizer.
+
+    Each chunk carries its own trailing space, so ``"".join(fake_chunks(t)) ==
+    t`` for every ``t``. A consumer therefore concatenates and is done; it never
+    has to decide whether to re-insert whitespace, which is the bug that makes a
+    streamed answer differ from the completed one by a space and then differ
+    from it by a citation.
+    """
+    if not text:
+        return ()
+    words = text.split(" ")
+    return (*(f"{word} " for word in words[:-1]), words[-1])
 
 
 class LLMError(RuntimeError):
@@ -159,23 +186,46 @@ class FakeLLM:
 
     def complete(self, messages: Sequence[ChatMessage]) -> LLMResponse:
         """Answer from the numbered blocks in the last user message."""
+        response = self._answer(messages)
+        self._record_usage(response)
+        return response
+
+    def stream(self, messages: Sequence[ChatMessage]) -> Generator[str, None, LLMResponse]:
+        """Yield the same answer :meth:`complete` gives, one word at a time.
+
+        The answer is computed whole and then split (:func:`fake_chunks`). That
+        is the honest description of this double: it is a fixture for the
+        *transport*, and it makes no claim that a model composes an answer
+        incrementally. What it does guarantee is that a client sees the same
+        bytes in the same order on every run, on every machine — which is what
+        makes an assertion about a stream worth writing.
+
+        An abstention yields the sentinel like any other text rather than
+        yielding nothing. Suppressing it here would put a rendering decision
+        inside the model double and hide the general case: every delta is
+        provisional until the guardrails have run, and the abstain path is
+        simply the clearest example of provisional text that must be replaced.
+        """
+        response = self._answer(messages)
+        yield from fake_chunks(response.text)
+        self._record_usage(response)
+        return response
+
+    def _answer(self, messages: Sequence[ChatMessage]) -> LLMResponse:
+        """The completion, before anything is recorded or chunked."""
         user = next(
             (message.content for message in reversed(list(messages)) if message.role == "user"),
             "",
         )
         blocks = parse_context_blocks(user)
         if not blocks:
-            response = LLMResponse(text=ABSTAIN_TOKEN, model=self._model, finish_reason="abstain")
-            self._record_usage(response)
-            return response
+            return LLMResponse(text=ABSTAIN_TOKEN, model=self._model, finish_reason="abstain")
 
         question = user.rsplit(_QUESTION_HEADER, 1)[-1]
         question_terms = _substantive_terms(question)
         context_terms = _substantive_terms(" ".join(body for _, body in blocks))
         if question_terms and question_terms.isdisjoint(context_terms):
-            response = LLMResponse(text=ABSTAIN_TOKEN, model=self._model, finish_reason="abstain")
-            self._record_usage(response)
-            return response
+            return LLMResponse(text=ABSTAIN_TOKEN, model=self._model, finish_reason="abstain")
 
         sentences = [
             _cited_sentence(_first_sentence(body), marker)
@@ -185,12 +235,8 @@ class FakeLLM:
         if not sentences:
             # Blocks that are whitespace once the header is stripped carry no
             # quotable evidence. Abstaining beats emitting a bare marker.
-            response = LLMResponse(text=ABSTAIN_TOKEN, model=self._model, finish_reason="abstain")
-            self._record_usage(response)
-            return response
-        response = LLMResponse(text=" ".join(sentences), model=self._model, finish_reason="stop")
-        self._record_usage(response)
-        return response
+            return LLMResponse(text=ABSTAIN_TOKEN, model=self._model, finish_reason="abstain")
+        return LLMResponse(text=" ".join(sentences), model=self._model, finish_reason="stop")
 
     def _record_usage(self, response: LLMResponse) -> None:
         if self._usage_recorder is not None:
@@ -310,6 +356,93 @@ class OpenAILLM:
                 completion_tokens=result.completion_tokens,
             )
         return result
+
+    def stream(self, messages: Sequence[ChatMessage]) -> Generator[str, None, LLMResponse]:
+        """Send one chat completion request and yield content deltas.
+
+        Token usage is requested explicitly (``include_usage``) because a
+        streamed response does not carry it otherwise, and an eval row with a
+        blank cost column is a row that gets filled in later by guessing.
+
+        The finish reason is taken from whichever chunk carries one — the API
+        sends it on the penultimate chunk, not the last, and a stream that ends
+        without one is reported as ``None`` rather than assumed to be ``stop``:
+        a truncated answer and a completed one must not look alike.
+
+        Raises:
+            LLMError: The request failed, at the start or part way through. A
+                partial answer is never returned as if it were whole.
+        """
+        client = self._get_client()
+        try:
+            stream = client.chat.completions.create(
+                model=self._model,
+                messages=[message.as_dict() for message in messages],
+                temperature=self._temperature,
+                max_tokens=self._max_output_tokens,
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+            pieces: list[str] = []
+            state = _StreamState(model=self._model)
+            for chunk in stream:
+                delta = state.absorb(chunk)
+                if delta:
+                    pieces.append(delta)
+                    yield delta
+        except Exception as exc:  # noqa: BLE001 - provider errors are opaque by design
+            # Same wording as `complete`, and for the same reason: the SDK's
+            # message may name a status code worth reading, and never the key.
+            raise LLMError(f"generation request failed: {type(exc).__name__}: {exc}") from exc
+
+        result = LLMResponse(
+            text="".join(pieces).strip(),
+            model=state.model,
+            finish_reason=state.finish_reason,
+            prompt_tokens=state.prompt_tokens,
+            completion_tokens=state.completion_tokens,
+        )
+        if self._usage_recorder is not None:
+            self._usage_recorder(
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=result.completion_tokens,
+            )
+        return result
+
+
+@dataclass
+class _StreamState:
+    """What a chat-completion stream reveals one chunk at a time.
+
+    A streamed response is the same object as a completed one, delivered in
+    pieces that each carry a different part of it: text in most, the finish
+    reason in one, usage in the last. Accumulating that in a small mutable
+    object keeps :meth:`OpenAILLM.stream` readable and keeps the "which chunk
+    had which field?" knowledge in one place.
+    """
+
+    model: str
+    finish_reason: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+
+    def absorb(self, chunk: Any) -> str:
+        """Record what *chunk* carries and return its text delta, if any."""
+        self.model = str(getattr(chunk, "model", None) or self.model)
+        usage = getattr(chunk, "usage", None)
+        if usage is not None:
+            self.prompt_tokens = getattr(usage, "prompt_tokens", None)
+            self.completion_tokens = getattr(usage, "completion_tokens", None)
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            # The usage-only chunk `include_usage` appends after the last
+            # content chunk. Not an error, and not text.
+            return ""
+        choice = choices[0]
+        self.finish_reason = getattr(choice, "finish_reason", None) or self.finish_reason
+        delta = getattr(choice, "delta", None)
+        content = getattr(delta, "content", None)
+        return str(content) if content else ""
 
 
 def build_llm(

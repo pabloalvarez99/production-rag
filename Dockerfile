@@ -41,6 +41,8 @@ RUN pip install --no-cache-dir -e .
 # Config and data are also bind-mounted read-only by compose; baking them in
 # keeps `docker run` (without compose) working standalone.
 COPY configs/ ./configs/
+# Free-path scorecard HTML for GET /evals (human-readable, billed=false fixture).
+COPY docs/assets/scorecard.html ./docs/assets/scorecard.html
 
 # Non-root runtime. Owning /app lets an editable install rewrite egg-info if a
 # later `pip install -e .` runs inside the container during debugging.

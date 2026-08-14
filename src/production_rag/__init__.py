@@ -17,7 +17,7 @@ example a future ingest CLI or an evaluation runner.
 
 from production_rag.config import Settings, get_settings
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Settings",

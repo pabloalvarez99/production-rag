@@ -148,7 +148,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         # context. The exception type is sufficient for automation and logs.
         return _fail("query failed", type(exc).__name__, EXIT_RUNTIME)
 
-    response_payload = result.model_dump(mode="json")
+    # exclude_none so optional debug fields (e.g. cache) stay off the wire when
+    # the cache did not run — same allowlist shape as the HTTP response.
+    response_payload = result.model_dump(mode="json", exclude_none=True)
     if result.debug is None:
         response_payload.pop("debug", None)
     _emit({"ok": True, **response_payload})

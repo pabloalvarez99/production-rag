@@ -115,8 +115,23 @@ adapters around one stage each with no business logic, which is what makes stage
 node latency the same number by construction. Timings are collected on every request; whether
 they are *visible* depends on the surface, because `debug` is caller-controlled and may only
 widen the response to things that would be safe to publish. Tracing (`observability/`) is a
-seam: the null tracer is the default, Langfuse is opt-in, and a trace failure never fails a
-request. [ADR-0002](adr/0002-langgraph-query.md), [ADR-0006](adr/0006-observability.md).
+seam: the null tracer is the default, Langfuse is opt-in, an optional OTel console exporter
+sits behind `PRAG_OTEL_CONSOLE` (off in CI), and a trace failure never fails a request.
+[ADR-0002](adr/0002-langgraph-query.md), [ADR-0006](adr/0006-observability.md).
+
+**Allowlist filters fail closed — and the sample corpus needs `title=Filtering`.**
+`retrieval.filters.allowed_fields` is not decoration: a field outside the list is rejected
+with 422 / `filter_not_allowed` before any embed or search runs, never dropped while the
+query continues under different evidence. That is the same posture as rejecting an unknown
+JSON body field. The free demo's visible filter beat uses **`title=Filtering`**, not
+`source=sample`, for a payload reason that is easy to get wrong: on the sample / demo
+corpus path, filtering by `source=sample` does not narrow the way a reviewer expects
+because the points that power the demo are not labelled so that `source=sample` selects a
+strict subset of the filtering document. The committed capture and the UI chip therefore
+use the title that actually isolates `qdrant/search/filtering.md`. An unfiltered and a
+filtered answer to the same question are different cache keys for the same reason — a
+filtered answer must never serve an unfiltered query. [ADR-0011](adr/0011-metadata-filters.md),
+[ADR-0013](adr/0013-filter-aware-query-cache.md).
 
 ## How it is measured, and what that does not prove
 

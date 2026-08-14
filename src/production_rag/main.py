@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from structlog.typing import Processor
 
 from production_rag.api.middleware import RequestContextMiddleware
-from production_rag.api.routes import health, query, ready, ui
+from production_rag.api.routes import evals, health, query, query_stream, ready, ui
 from production_rag.api.routes.ui import STATIC_DIR
 from production_rag.config import Settings, get_settings
 
@@ -99,10 +99,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Unversioned first: infrastructure probes hit /health.
     app.include_router(ui.router)
+    app.include_router(evals.router)
     app.include_router(health.unversioned_router)
     app.include_router(health.router, prefix=resolved.api_prefix)
     app.include_router(ready.router, prefix=resolved.api_prefix)
     app.include_router(query.router, prefix=resolved.api_prefix)
+    app.include_router(query_stream.router, prefix=resolved.api_prefix)
 
     structlog.get_logger(__name__).info(
         "app_created",

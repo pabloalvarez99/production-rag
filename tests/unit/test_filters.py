@@ -173,13 +173,22 @@ class TestIndexAwareness:
         assert built is not None
         assert built.unindexed_fields == ("title",)
 
-    def test_unindexed_field_emits_a_warning(self) -> None:
-        with structlog.testing.capture_logs() as logs:
-            DEFAULT_POLICY.build({"title": "01-vectors.md"})
-        warnings = [entry for entry in logs if entry["event"] == "filter_field_unindexed"]
-        assert warnings
-        assert warnings[0]["log_level"] == "warning"
-        assert warnings[0]["fields"] == ["title"]
+    def test_unindexed_field_emits_a_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Capture via the module logger object itself. Suite-wide structlog
+        # reconfiguration (create_app) makes capture_logs order-dependent.
+        from production_rag.retrieval import filters as filters_mod
+
+        events: list[dict[str, object]] = []
+
+        class _Capture:
+            def warning(self, event: str, **kwargs: object) -> None:
+                events.append({"event": event, **kwargs})
+
+        monkeypatch.setattr(filters_mod, "_log", _Capture())
+        DEFAULT_POLICY.build({"title": "01-vectors.md"})
+        assert events
+        assert events[0]["event"] == "filter_field_unindexed"
+        assert events[0]["fields"] == ["title"]
 
     def test_indexed_field_is_quiet(self) -> None:
         with structlog.testing.capture_logs() as logs:

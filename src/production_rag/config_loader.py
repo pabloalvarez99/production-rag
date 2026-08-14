@@ -329,8 +329,11 @@ class GenerationConfig(_Section):
     max_context_tokens: int = Field(default=6000, gt=0)
     timeout_seconds: float = Field(default=60.0, gt=0)
     max_retries: int = Field(default=3, ge=0)
-    # Whole-answer generation is live; streaming is not. Defaulting this to
-    # true would present declared behaviour as implemented behaviour.
+    # Streaming is live (M7): ``POST /v1/query/stream`` exists unconditionally,
+    # because a route that appears and disappears with a profile is a contract
+    # no client can code against. What this flag decides is the *default* the
+    # demo form starts with, and it stays off so a first visit shows the plain
+    # request/response path the API contract describes.
     stream: bool = False
     citations: CitationsConfig = CitationsConfig()
     prompt: PromptConfig = PromptConfig()
@@ -395,6 +398,19 @@ class ObservabilityConfig(_Section):
     metrics: MetricsConfig = MetricsConfig()
 
 
+class CacheConfig(_Section):
+    """Optional in-process result cache (M7).
+
+    Off by default so a production-shaped profile never serves a shared answer
+    across workers it did not design for. The local demo turns this on with
+    ``CACHE_ENABLED=true`` (compose) or ``enabled: true`` here. Filters are
+    part of the key — see ``docs/adr/0013-filter-aware-query-cache.md``.
+    """
+
+    enabled: bool = False
+    max_entries: int = Field(default=256, ge=1)
+
+
 class YamlConfig(_Section):
     """The whole file, with only the blocks the code consumes typed out.
 
@@ -409,6 +425,7 @@ class YamlConfig(_Section):
     rerank: RerankConfig = RerankConfig()
     generation: GenerationConfig = GenerationConfig()
     observability: ObservabilityConfig = ObservabilityConfig()
+    cache: CacheConfig = CacheConfig()
 
 
 def load_yaml_config(path: str | Path | None = None) -> YamlConfig:

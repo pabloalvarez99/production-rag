@@ -26,14 +26,16 @@ Each one has a stated position here, an ADR, and a test.
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 
-**Ship status: [v0.1.0](https://github.com/pabloalvarez99/production-rag/releases/tag/v0.1.0)
-is published with a public-ready free path.** Clone, run, and review everything below without a
-credential; the one open item is a hosted-provider baseline run. One page with the demo, what
-CI proves, and what is deliberately absent: [docs/SHIP.md](docs/SHIP.md). The engineering
-story behind the trade-offs, with the failure behaviour and the honest limits:
-[docs/CASESTUDY.md](docs/CASESTUDY.md). How to run the checks
-and contribute: [CONTRIBUTING.md](CONTRIBUTING.md). How to report a vulnerability, and why no
-key belongs in an issue: [SECURITY.md](SECURITY.md). Release history: [CHANGELOG.md](CHANGELOG.md).
+**Ship status: clone-only free path (no hosted URL — and no Ipsura
+`production-rag.vercel.app` attribution).** [v0.1.0](https://github.com/pabloalvarez99/production-rag/releases/tag/v0.1.0)
+is the first public cut; the operable depth campaign adds streaming, a filter-aware cache,
+a human-readable scorecard page, and an optional OTel console seam. Clone, run, and review
+everything below without a credential; the one open quality item remains a hosted-provider
+baseline run. One page with the demo, what CI proves, and what is deliberately absent:
+[docs/SHIP.md](docs/SHIP.md). The engineering story:
+[docs/CASESTUDY.md](docs/CASESTUDY.md). Demo-day spine:
+[docs/DEMO-DAY.md](docs/DEMO-DAY.md). Checks: [CONTRIBUTING.md](CONTRIBUTING.md). Security:
+[SECURITY.md](SECURITY.md). History: [CHANGELOG.md](CHANGELOG.md).
 
 ## Try it free ($0, no API key)
 
@@ -137,12 +139,16 @@ and does not prove.
 | Grounded generation with resolvable `[n]` citations | **LIVE** | `generation/citations.py` behind the LangGraph nodes in `graph/` |
 | Refusal as a first-class response outcome | **LIVE** | `generation/guardrails.py`; insufficient evidence never invents support |
 | Allowlisted metadata filters, failing closed | **LIVE** | `retrieval/filters.py`; a field outside `retrieval.filters.allowed_fields` is a typed 422, never a silently widened answer |
+| Streamed answers that stay provisional until grounded | **LIVE** | `api/routes/query_stream.py`; `POST /v1/query/stream` sends deltas a client must not render as an answer, then one terminal event carrying the same body `POST /v1/query` returns — a refusal arrives there, never as an error |
 | Server-rendered query UI | **LIVE** | `api/routes/ui.py` and htmx; pins the local embedder and generator, so the UI cannot bill |
 | Metadata filter control on the UI | **LIVE** | `templates/index.html`; the field list is the deployment allowlist read from configuration, and a rejected filter renders the same typed 422 the API answers |
+| Stream toggle on the UI | **LIVE** | `templates/index.html`; the draft is labelled unverified and is replaced by the grounded answer or by the refusal, so the guardrail is visible rather than described |
+| Filter-aware in-process result cache | **LIVE** | `query_cache.py`; off by default, on in the local demo via `CACHE_ENABLED`; filters are part of the key (ADR-0013) |
 | Health, readiness, request ids, structured logs | **LIVE** | `/health`, `/v1/ready`, middleware, caller-controlled safe diagnostics |
-| Tracing seam | **LIVE** | Null tracer by default; Langfuse is opt-in |
+| Tracing seam | **LIVE** | Null tracer by default; Langfuse opt-in; optional OTel console via `PRAG_OTEL_CONSOLE` (off in CI) |
 | Two-tier evaluation with paired statistics | **LIVE** | `evals/run.py`, `evals/matrix.py`, `evals/stats.py`; `--fail-under-hit` reports by default |
 | Scorecard publication that fails closed | **LIVE** | `tools/render_docs.py` renders one artefact into this README; a stale region breaks CI |
+| Human-readable free-path scorecard | **LIVE** | `docs/assets/scorecard.html` and local `GET /evals`; labels contract/plumbing, `billed=false`, `n`, not SOTA |
 | Metrics export endpoint | **DECLARED** | Config shape exists; no `/metrics` route |
 | Provider-backed quality numbers | **OUT** | The published table is a local-provider plumbing fixture |
 | Auth, rate limits, production retry policy | **OUT** | Platform scope (P5), not represented as live here |
@@ -306,7 +312,7 @@ retrieval core instead of restarting it. Full index: [docs/PORTFOLIO.md](docs/PO
 
 | # | Project | What it adds | State |
 | --- | --- | --- | --- |
-| **P1** | **production-rag** (this repository) | Hybrid retrieval, rerank, grounded citations, refusal, two-tier evaluation | v0.1.0 live; one hosted baseline outstanding |
+| **P1** | **production-rag** (this repository) | Hybrid retrieval, rerank, grounded citations, refusal, stream, filter-aware cache, two-tier evaluation | v0.2.0 clone-only free path; no hosted URL; one hosted baseline outstanding |
 | P2 | [agentic-rag-research](https://github.com/pabloalvarez99/agentic-rag-research) | Bounded plan → retrieve → critique loop, tools, stop reasons, traces over this retrieval core | v0.1.0 live |
 | P3 | [multi-agent-orchestration](https://github.com/pabloalvarez99/multi-agent-orchestration) | Orchestrator plus specialists, handoff budgets, degraded outcomes, timeline | v0.1.0 live |
 | P4 | [repomind](https://github.com/pabloalvarez99/repomind) | AST-aware code chunks and `path:line` answers over a repository, with its own fixture eval | v0.1.0 live |
@@ -332,8 +338,4 @@ provenance, and local-provider runs are never presented as quality results.
 [SECURITY.md](SECURITY.md) covers private vulnerability reporting and the credential rule —
 values live in `.env`, which is gitignored; `.env.example` is the committed template and
 holds names and shapes only. A key never belongs in an issue, a pull request, or a pasted
-log. If one is exposed, rotate it before anything else.
-
-## License
-
-[MIT](LICENSE) © 2026 Pablo Figueroa.
+log. If one is exposed, rotate it before anything else

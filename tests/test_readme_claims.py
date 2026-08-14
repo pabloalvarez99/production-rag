@@ -90,15 +90,17 @@ def test_closing_claim_predicates_match_the_implemented_surface() -> None:
     """Mutation baseline for the five optional surfaces.
 
     ``retrieval filters`` flipped to ``True`` in M7: ``allowed_fields`` is read by
-    :mod:`production_rag.retrieval.filters` and enforced on every query path, so
-    the README may now describe filters without an honesty marker. The other four
-    stay ``False`` — that is what keeps this a baseline rather than a rubber
+    :mod:`production_rag.retrieval.filters` and enforced on every query path.
+    ``streaming`` flipped in M7 too — ``POST /v1/query/stream`` exists and
+    ``generation.stream`` is read by the UI route rather than only parsed — so
+    the README may now describe both without an honesty marker. The remaining
+    three stay ``False``: that is what keeps this a baseline rather than a rubber
     stamp, and what makes an accidental flip visible in a diff.
     """
     assert {claim.name: claim.exists for claim in CLAIMS} == {
         "LlamaIndex": False,
         "Ragas": False,
-        "streaming": False,
+        "streaming": True,
         "retrieval filters": True,
         "/metrics": False,
     }
