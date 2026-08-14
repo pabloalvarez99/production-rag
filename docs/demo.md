@@ -34,6 +34,44 @@ any encoder ffmpeg supports. Do not solve a size problem by dropping the refusal
 beat — the refusal is the half of the recording that makes the other half mean
 something.
 
+## The social preview card
+
+`docs/assets/social-preview.png` is the image GitHub shows when the repository is
+linked in a message, a post, or a chat — for many readers it is the first thing
+they see of this project, before the README.
+
+```powershell
+python scripts/make_social_preview.py
+```
+
+`scripts/make_social_preview.py` lays the card out in HTML and screenshots it
+with Playwright, rather than drawing it with an image library or generating it
+with a model. The wordmark is real text, so it is exactly right rather than
+approximately right; the palette is parsed out of `src/production_rag/static/app.css`,
+so the card cannot drift away from the UI it advertises; and the evidence panel
+is the committed `ui-grounded.png` itself, not a re-staged imitation of it.
+
+It is built at 1280x640 because that is the size GitHub renders and crops to. A
+16:9 card loses a band off the top and bottom. `tests/test_docs_assets.py`
+asserts the committed dimensions.
+
+### Setting it on the repository
+
+**This is a manual step, and no script here performs it.** The social preview is
+not part of the repository contents: it lives in repository settings, and the
+API token used for automation cannot upload it.
+
+1. Open <https://github.com/pabloalvarez99/production-rag/settings> (Settings →
+   General).
+2. Scroll to **Social preview** and choose **Edit → Upload an image**.
+3. Upload `docs/assets/social-preview.png`.
+4. Verify by pasting the repository URL into any chat client that unfurls links,
+   or through <https://www.opengraph.xyz/>. GitHub caches the old card for a
+   while; a stale unfurl right after upload is expected, not a failure.
+
+Until someone does that by hand, the committed file is the intended card and not
+the live one.
+
 ## Record it live instead
 
 The section below is for a live walkthrough, where the point is watching a person

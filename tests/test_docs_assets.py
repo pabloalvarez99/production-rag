@@ -19,6 +19,9 @@ import pytest
 ROOT = Path(__file__).parents[1]
 ASSETS = ROOT / "docs" / "assets"
 DEMO_ASSET = ASSETS / "production-rag-demo.gif"
+SOCIAL_PREVIEW = ASSETS / "social-preview.png"
+# GitHub renders a social preview at this size and crops anything else.
+SOCIAL_PREVIEW_SIZE = (1280, 640)
 # Generous enough that a legitimate recording fits, tight enough that an
 # accidental full-page or full-colour export fails here instead of on a reviewer's
 # connection.
@@ -67,6 +70,18 @@ def test_the_demo_recording_is_committed_and_referenced() -> None:
     }
     assert "README.md" in referenced_in
     assert "docs/demo.md" in referenced_in
+
+
+def _png_size(path: Path) -> tuple[int, int]:
+    """Read a PNG's dimensions from its IHDR chunk, without an image library."""
+    header = path.read_bytes()[:24]
+    assert header[:8] == b"\x89PNG\r\n\x1a\n", f"{path.name} is not a PNG"
+    return int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
+
+
+def test_the_social_preview_is_committed_at_the_size_github_renders() -> None:
+    assert SOCIAL_PREVIEW.exists(), "scripts/make_social_preview.py has not been run"
+    assert _png_size(SOCIAL_PREVIEW) == SOCIAL_PREVIEW_SIZE
 
 
 @pytest.mark.parametrize("asset", sorted(ASSETS.iterdir()))
