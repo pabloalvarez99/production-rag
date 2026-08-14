@@ -61,6 +61,7 @@ class DifficultyReport:
 
     @property
     def ok(self) -> bool:
+        """True when every difficulty predicate passed."""
         return not self.findings
 
 
@@ -273,7 +274,10 @@ def assert_program_not_trivial(golden: Path, ranks: Path) -> DifficultyReport:
     """Raise ``AssertionError`` when any difficulty predicate fails."""
     report = check_difficulty(golden, ranks)
     if not report.ok:
-        lines = [f"{finding.slice}: [{finding.code}] {finding.message}" for finding in report.findings]
+        lines = [
+            f"{finding.slice}: [{finding.code}] {finding.message}"
+            for finding in report.findings
+        ]
         raise AssertionError(
             "free-path difficulty predicates failed:\n- " + "\n- ".join(lines)
         )

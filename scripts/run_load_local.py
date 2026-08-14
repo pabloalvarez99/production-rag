@@ -55,6 +55,7 @@ def _fake_executor(
 
 
 def main() -> int:
+    """Run the load harness and write JSON latency stats."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--n", type=int, default=100)
     parser.add_argument(
@@ -83,13 +84,16 @@ def main() -> int:
             },
         )
         elapsed = (time.perf_counter() - started) * 1000.0
-        assert response.status_code == 200, response.text
+        if response.status_code != 200:
+            raise SystemExit(f"load query failed: {response.status_code} {response.text}")
         latencies_ms.append(elapsed)
     latencies_ms.sort()
+
     def pct(p: float) -> float:
         if not latencies_ms:
             return 0.0
-        rank = min(len(latencies_ms) - 1, max(0, int(round(p * (len(latencies_ms) - 1)))))
+        index = round(p * (len(latencies_ms) - 1))
+        rank = min(len(latencies_ms) - 1, max(0, index))
         return round(latencies_ms[rank], 3)
 
     payload = {

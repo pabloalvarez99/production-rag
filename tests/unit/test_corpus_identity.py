@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -11,15 +11,11 @@ from fastapi.testclient import TestClient
 from production_rag.api.routes import query as query_route
 from production_rag.api.schemas import CitationOut, QueryRequest, QueryResponse
 from production_rag.config import Settings
-from production_rag.corpus_identity import (
-    build_corpus_identity,
-    hash_corpus_root,
-)
+from production_rag.corpus_identity import build_corpus_identity, hash_corpus_root
 from production_rag.main import create_app
 from production_rag.query_cache import (
     CacheKey,
     QueryResultCache,
-    canonical_filters,
     reset_query_cache,
     retrieval_fingerprint,
 )
@@ -27,6 +23,9 @@ from production_rag.query_cache import (
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE = ROOT / "data" / "raw" / "sample"
 ALT = ROOT / "data" / "raw" / "alt"
+
+ClientFactory = Callable[[Settings], TestClient]
+SettingsFactory = Callable[..., Settings]
 
 
 @pytest.fixture(autouse=True)
@@ -59,22 +58,21 @@ def test_ready_exposes_identity(client: TestClient) -> None:
     payload = client.get("/v1/ready").json()
     assert payload["status"] == "ready"
     assert payload["collection"]
-    assert payload["embedder_id"] in {"fake", None} or payload["embedder_id"]
-    # Free-path workspace has data/raw; expect computed identity.
+    assert "embedder_id" in payload
     assert payload["corpus_hash"] is None or len(payload["corpus_hash"]) == 64
     assert "identity" in payload["checks"]
 
 
 def test_cache_no_cross_hit_across_corpus_identity() -> None:
     cache = QueryResultCache(max_entries=8)
-    base = dict(
-        collection="prag_demo",
-        query="What is hybrid search?",
-        filters="",
-        embedder_id="fake",
-        llm_id="fake",
-        retrieval=retrieval_fingerprint(mode="hybrid", top_k=12),
-    )
+    base = {
+        "collection": "prag_demo",
+        "query": "What is hybrid search?",
+        "filters": "",
+        "embedder_id": "fake",
+        "llm_id": "fake",
+        "retrieval": retrieval_fingerprint(mode="hybrid", top_k=12),
+    }
     left = CacheKey(**base, corpus_identity="hash-a|chunker|9|fake")
     right = CacheKey(**base, corpus_identity="hash-b|chunker|2|fake")
     response = QueryResponse(
@@ -97,14 +95,9 @@ def test_cache_no_cross_hit_across_corpus_identity() -> None:
 
 
 def test_wrong_collection_is_typed_404(
-    client_factory: object, settings_factory: object
+    client_factory: ClientFactory, settings_factory: SettingsFactory
 ) -> None:
-    from collections.abc import Callable
-
-    factory = client_factory  # type: ignore[assignment]
-    settings_factory_fn = settings_factory  # type: ignore[assignment]
-    assert callable(factory) and callable(settings_factory_fn)
-    client = factory(settings_factory_fn())  # type: ignore[operator]
+    client = client_factory(settings_factory())
     response = client.post(
         "/v1/query",
         json={
@@ -120,15 +113,8 @@ def test_wrong_collection_is_typed_404(
     assert detail["refused"] is False
 
 
-def test_provider_failure_is_not_refusal(
-    client_factory: object, settings_factory: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from collections.abc import Callable
-
+def test_provider_failure_is_not_refusal(settings_factory: SettingsFactory) -> None:
     from production_rag.generation.llm import LLMError
-
-    factory: Callable[..., TestClient] = client_factory  # type: ignore[assignment]
-    settings_fn: Callable[..., Settings] = settings_factory  # type: ignore[assignment]
 
     def boom(
         payload: QueryRequest,
@@ -140,7 +126,7 @@ def test_provider_failure_is_not_refusal(
     ) -> QueryResponse:
         raise LLMError("provider exploded")
 
-    app = create_app(settings_fn())
+    app = create_app(settings_factory())
     app.dependency_overrides[query_route.get_query_executor] = lambda: boom
     client = TestClient(app)
     response = client.post(
@@ -153,12 +139,8 @@ def test_provider_failure_is_not_refusal(
     assert detail["refused"] is False
 
 
-def test_store_failure_is_not_refusal(
-    settings_factory: object,
-) -> None:
+def test_store_failure_is_not_refusal(settings_factory: SettingsFactory) -> None:
     from production_rag.retrieval.store import VectorStoreError
-
-    settings_fn = settings_factory  # type: ignore[assignment]
 
     def boom(
         payload: QueryRequest,
@@ -170,7 +152,7 @@ def test_store_failure_is_not_refusal(
     ) -> QueryResponse:
         raise VectorStoreError("qdrant down")
 
-    app = create_app(settings_fn())  # type: ignore[operator]
+    app = create_app(settings_factory())
     app.dependency_overrides[query_route.get_query_executor] = lambda: boom
     client = TestClient(app)
     response = client.post(
@@ -181,5 +163,3 @@ def test_store_failure_is_not_refusal(
     detail = response.json()["detail"]
     assert detail["error_type"] == "store_unavailable"
     assert detail["refused"] is False
-    # Explicitly not a soft refusal body.
-    assert "refused" in detail and detail["refused"] is False

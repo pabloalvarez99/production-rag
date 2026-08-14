@@ -23,7 +23,9 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "docs" / "assets" / "transcripts"
 
 
-def _executor_for(kind: str):
+def _executor_for(kind: str) -> object:
+    """Return a deterministic query executor for *kind*."""
+
     def _run(
         payload: QueryRequest,
         *,
@@ -83,6 +85,7 @@ def _client(kind: str) -> TestClient:
 
 
 def main() -> int:
+    """Write grounded/refuse/filter/stream/error transcripts under docs/assets."""
     OUT.mkdir(parents=True, exist_ok=True)
     transcripts: dict[str, object] = {}
 
