@@ -25,10 +25,12 @@ Open <http://localhost:8000/> and ask two questions:
 - *Who won the Antarctic underwater chess championship?* — an explicit refusal with its
   reason, because the corpus does not support an answer.
 
-Then re-run the first question with the **metadata filter** control set to `source` =
-`sample`. The result footer names the narrowing it was answered under. The fields offered
-are the deployment's allowlist, read from the same configuration the API enforces; a field
-outside it is answered 422 with `filter_not_allowed` rather than quietly ignored.
+Then ask *How does filtering work in Qdrant?* twice — once as is, and once with the
+**metadata filter** control set to `title` = `Filtering`. The filtered run cites only
+`qdrant/search/filtering.md` and its footer names the narrowing it was answered under. The
+fields offered are the deployment's allowlist, read from the same configuration the API
+enforces; a field outside it is answered 422 with `filter_not_allowed` rather than quietly
+ignored.
 
 `docker compose down` stops the stack and keeps the vector volume. The rest of the
 credential-free path — ingest, the query API and CLI, both evaluation tiers, and regenerating

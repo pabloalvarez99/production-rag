@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING
 
 from capture_ui import (
     COLLECTION,
+    FILTER_FIELD,
+    FILTER_VALUE,
     GROUNDED_QUESTION,
     REFUSAL_QUESTION,
     _run,
@@ -49,16 +51,29 @@ STORYBOARD: tuple[tuple[str, float], ...] = (
     ("02-typing-grounded", 1.2),
     ("03-grounded", 3.6),
     ("04-grounded-timings", 3.0),
-    ("05-typing-refusal", 1.2),
-    ("06-refused", 3.8),
+    ("05-filter-set", 1.6),
+    ("06-filtered", 3.4),
+    ("07-typing-refusal", 1.2),
+    ("08-refused", 3.8),
 )
 
 
-def _submit(page: Page, question: str, outcome: str) -> None:
+def _submit(
+    page: Page,
+    question: str,
+    outcome: str,
+    *,
+    filter_field: str = "",
+    filter_value: str = "",
+) -> None:
     """Submit through the real form handler and wait for the typed outcome."""
     page.evaluate(
-        """async question => {
-            const body = new URLSearchParams({question});
+        """async ({question, filterField, filterValue}) => {
+            const body = new URLSearchParams({
+                question,
+                filter_field: filterField,
+                filter_value: filterValue,
+            });
             const response = await fetch('/ui/query', {
                 method: 'POST',
                 headers: {'content-type': 'application/x-www-form-urlencoded'},
@@ -66,7 +81,7 @@ def _submit(page: Page, question: str, outcome: str) -> None:
             });
             document.querySelector('#result').innerHTML = await response.text();
         }""",
-        question,
+        {"question": question, "filterField": filter_field, "filterValue": filter_value},
     )
     page.locator(f'[data-outcome="{outcome}"]').wait_for(state="visible")
 
@@ -116,15 +131,35 @@ def _record_frames(frames: Path) -> None:
         _focus(page, ".diagnostics")
         _shoot(page, frames, "04-grounded-timings")
 
+        # The same question again, narrowed. Shown before the refusal so the
+        # recording still ends on the refusal, which is the beat that carries.
         _focus(page, "#question")
+        page.locator("#filter-field").select_option(FILTER_FIELD)
+        page.locator("#filter-value").fill(FILTER_VALUE)
+        _shoot(page, frames, "05-filter-set")
+
+        _submit(
+            page,
+            GROUNDED_QUESTION,
+            "grounded",
+            filter_field=FILTER_FIELD,
+            filter_value=FILTER_VALUE,
+        )
+        _stabilize_dynamic_diagnostics(page)
+        _focus(page, "#result")
+        _shoot(page, frames, "06-filtered")
+
+        _focus(page, "#question")
+        page.locator("#filter-field").select_option("")
+        page.locator("#filter-value").fill("")
         question.fill(REFUSAL_QUESTION[: len(REFUSAL_QUESTION) // 2])
-        _shoot(page, frames, "05-typing-refusal")
+        _shoot(page, frames, "07-typing-refusal")
 
         question.fill(REFUSAL_QUESTION)
         _submit(page, REFUSAL_QUESTION, "refused")
         _stabilize_dynamic_diagnostics(page)
         _focus(page, "#result")
-        _shoot(page, frames, "06-refused")
+        _shoot(page, frames, "08-refused")
 
         browser.close()
 

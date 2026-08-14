@@ -84,12 +84,13 @@ deterministic embedder, and serves the UI. Open <http://localhost:8000/>.
 
 1. **"Why does hybrid search use reciprocal rank fusion?"**
 2. **"Who won the Antarctic underwater chess championship?"**
-3. The first question again, with the **metadata filter** set to `source` = `sample`.
+3. **"How does filtering work in Qdrant?"** — twice. Once unfiltered, then again with the
+   **metadata filter** set to `title` = `Filtering`.
 
 The order carries the argument. A refusal shown first reads as a system that cannot
-answer; a refusal shown second reads as a system that chose not to. The third run is the
-same question under a narrowing, so the reviewer compares two answers rather than
-taking the filter on trust.
+answer; a refusal shown second reads as a system that chose not to. The third pair is one
+question asked twice, so the reviewer sees the narrowing change which documents the
+citations come from rather than taking the filter on trust.
 
 ### What the reviewer must see
 
@@ -101,11 +102,11 @@ taking the filter on trust.
   validate citations, guardrails.
 - On the second question: an explicit **refusal that states its reason**, with no
   invented supporting text.
-- On the third run: a **Filtered: source = sample** chip in the result footer, so the
-  answer names the narrowing it was produced under. The field list in the control is the
-  deployment's allowlist, read from configuration — pick nothing outside it, because there
-  is nothing outside it to pick. A field posted by hand is answered 422 with
-  `filter_not_allowed`, never dropped.
+- On the filtered run: every citation from `qdrant/search/filtering.md`, and a
+  **Filtered: title = Filtering** chip in the result footer — an answer that was narrowed
+  never reads as an answer over the whole corpus. The field list in the control is the
+  deployment's allowlist, read from configuration; there is nothing outside it to pick,
+  and a field posted by hand is answered 422 with `filter_not_allowed`, never dropped.
 
 ### Say this
 
@@ -120,6 +121,10 @@ lucky answer. When nothing survives, the guardrail refuses."
 - Do **not** cite the published scorecard as a quality result. It is an explicitly
   labelled local-provider fixture, and no hosted baseline has been run.
 - Do **not** promise auth or rate limiting here. That is P5's repository, on purpose.
+- Do **not** present the filter as access control. The allowlist bounds which *fields* a
+  query may filter on, never which documents a caller may see. `title` is also the one
+  allowlisted field with no payload index, so that filter is a scan — logged as
+  `filter_field_unindexed` rather than hidden as unexplained latency.
 
 ### If a reviewer asks for the failure mode
 
