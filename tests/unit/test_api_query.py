@@ -350,7 +350,13 @@ def test_query_returns_503_when_a1_pipeline_is_missing(
     response = client.post("/v1/query", json={"question": "Why use RRF?"})
 
     assert response.status_code == 503
-    assert response.json() == {"detail": "query pipeline not installed"}
+    assert response.json() == {
+        "detail": {
+            "error_type": "pipeline_unavailable",
+            "message": "query pipeline not installed",
+            "refused": False,
+        }
+    }
     assert "X-Request-ID" in response.headers
 
 

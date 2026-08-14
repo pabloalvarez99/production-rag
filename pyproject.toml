@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "production-rag"
-version = "0.3.0"
+version = "1.0.0"
 description = "Production-grade RAG service with hybrid retrieval, cross-encoder reranking, grounded citations, and a two-tier offline evaluation harness."
 readme = "README.md"
 requires-python = ">=3.12"

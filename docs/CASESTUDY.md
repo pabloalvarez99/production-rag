@@ -3,9 +3,11 @@
 How a retrieval-augmented question-answering service was built so that a stranger can clone
 it, run the whole path for free, and check every claim it makes about itself.
 
-The verified runtime snapshot is published as
-[v0.1.0](https://github.com/pabloalvarez99/production-rag/releases/tag/v0.1.0). This case
-study documents that release and was added to `main` immediately afterward.
+The free-path flagship through the v1.0 season remains **clone-only**: no Vercel host, no
+`production-rag.vercel.app` (that hostname is Ipsura and is never this product). Releases
+span [v0.1.0](https://github.com/pabloalvarez99/production-rag/releases/tag/v0.1.0) through
+**v1.0.0**. This case study is kept current with season trade-offs, not frozen at the first
+tag.
 
 ## The constraints that shaped it
 
@@ -142,14 +144,39 @@ because the points that power the demo are not labelled so that `source=sample` 
 strict subset of the filtering document. The committed capture and the UI chip therefore
 use the title that actually isolates `qdrant/search/filtering.md`.
 
-**Cache keys include filters for the same honesty reason.** The in-process result cache is
+**Cache keys include filters *and* corpus identity.** The in-process result cache is
 **off by default** (`CACHE_ENABLED` / config for local demos only). When on, the key is
-`(collection, query, filters, embedder id, llm id, retrieval fingerprint)`. Filters are
-not optional decoration on the key: an unfiltered answer must never serve a filtered
-query (or the reverse). A second identical replay records `cache: hit` under debug; a
-filter mismatch is a miss even when the question text matches.
-[ADR-0011](adr/0011-metadata-filters.md),
-[ADR-0013](adr/0013-filter-aware-query-cache.md).
+`(collection, query, filters, embedder id, llm id, retrieval fingerprint, corpus identity)`.
+Filters are not optional decoration: an unfiltered answer must never serve a filtered
+query (or the reverse). Corpus hash and chunker version are not optional either: two
+corpora that share a collection name must not cross-hit. A second identical replay
+records `cache: hit` under debug; a filter or identity mismatch is a miss even when the
+question text matches. [ADR-0011](adr/0011-metadata-filters.md),
+[ADR-0013](adr/0013-filter-aware-query-cache.md),
+[ADR-0014](adr/0014-corpus-hash-in-cache-key.md).
+
+**Refuse versus error is a product boundary.** Refusal means the corpus evidence is
+insufficient and the system chose not to invent. Provider failure, embedder failure, and
+Qdrant down mean a dependency failed: HTTP 503 with `error_type` in
+`{provider_error, store_unavailable, …}` and **`refused: false`**. Soft-failing a down
+dependency as a refusal would teach clients to stop retrying the one path that would
+succeed after recovery. Capture scripts force `CACHE_ENABLED=false` so a failure still is
+not a cache hit of a previous grounded answer.
+
+**Why Qdrant stays local (and why there is no P1 host).** The free path is the hiring
+surface: clone, `demo_setup`, empty keys, CI with empty keys. Hosted Qdrant Cloud would
+add a secret, a bill, and a multi-tenant story this repository does not operate. The
+portfolio gateway (P5) may front services later; P1 itself does not invent a public URL.
+Never cite `production-rag.vercel.app` — that is Ipsura, not this product.
+
+**Evaluation program, not a screenshot.** The free-path program set
+(`data/eval/golden-free-path.jsonl`, n≥50) carries slices `answerable`, `unanswerable`,
+`filter`, and `hybrid-vs-dense`. Difficulty predicates fail CI when a ranking-stress
+slice is all target rank-1. The published scorecard ablation
+(dense / sparse / hybrid / hybrid+rerank) is labeled **plumbing** under fake providers
+with `billed=false`. Reportable comparisons still require `n ≥ 30` and a CI that excludes
+zero ([ADR-0010](adr/0010-statistical-reporting.md)). Load numbers in
+`docs/assets/load.json` are honest single-process timings, not SOTA throughput.
 
 ## How it is measured, and what that does not prove
 
@@ -186,8 +213,10 @@ providers; that run has not happened.
 | Reranker error, timeout or malformed response | fusion order returned, degradation reported |
 | Collection has no `sparse` named vector | abort with the recreate instruction — never a silent dense-only fallback |
 | Reranker extra not installed, or hosted provider without its key | abort before any query runs |
-| Qdrant unreachable | `/v1/ready` reports not ready; `/health` stays 200 so an orchestrator does not kill a healthy process |
-| Generation provider fails | the request fails; there is no fallback that is not an ungrounded answer |
+| Qdrant unreachable | `POST /v1/query` → 503 `store_unavailable`, `refused: false`; UI degraded path; `/health` stays 200 |
+| Generation / embedder provider fails | 503 `provider_error`, `refused: false` — never a soft refusal |
+| Wrong collection name on the request | 404 `wrong_collection`, `refused: false` |
+| Collection vector/embedder identity mismatch | 409 `collection_mismatch` (typed; not a fluent wrong answer) |
 
 ## How to reproduce
 

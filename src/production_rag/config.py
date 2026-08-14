@@ -44,7 +44,7 @@ class Settings(BaseSettings):
 
     # --- application identity -------------------------------------------------
     app_name: str = "production-rag"
-    app_version: str = "0.3.0"
+    app_version: str = "1.0.0"
     environment: str = "local"
     log_level: str = "INFO"
     api_prefix: str = "/v1"
@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     # Optional OpenTelemetry console exporter. Off by default; when true and the
     # ``obs`` extra is installed, span output goes to stderr. CI never sets this.
     prag_otel_console: bool = False
+
+    # Free-path corpus root used for /ready identity and cache key material when
+    # a sidecar has not been written yet. Relative to the process working dir.
+    corpus_root: str = "data/raw"
+    # Embedder id advertised on /ready when no sidecar exists (must match ingest).
+    ready_embedder_id: str = "fake"
 
     # --- credentials ----------------------------------------------------------
     # Never logged, never echoed in a response. Absent by default so the whole

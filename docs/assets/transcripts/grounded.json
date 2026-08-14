@@ -1,0 +1,21 @@
+{
+  "method": "POST",
+  "path": "/v1/query",
+  "status": 200,
+  "body": {
+    "answer": "Hybrid search uses reciprocal rank fusion [1].",
+    "citations": [
+      {
+        "marker": 1,
+        "chunk_id": "c1",
+        "source_path": "sample/01-hybrid-search.md",
+        "text": "Reciprocal rank fusion merges dense and sparse ranks.",
+        "rank": 1,
+        "title": "Hybrid search"
+      }
+    ],
+    "refused": false,
+    "refusal_reason": null
+  },
+  "cache_enabled": false
+}

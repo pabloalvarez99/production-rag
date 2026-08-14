@@ -81,6 +81,7 @@ Deliverable: **this file**. No new golden rows, no new harness code, no new HTML
 
 ### Baseline inventory (do not re-litigate)
 
+<!-- provenance-allow: historical-measurement: baseline inventory counts from ADR-0008 and seed set; not a quality claim -->
 | Artifact | n / shape | Role |
 | --- | --- | --- |
 | `data/eval/golden.jsonl` | 17 items · sample corpus | CI/plumbing seed; **not** a quality benchmark (random hit@5 ~56% on 9 docs) |
@@ -125,6 +126,7 @@ Keep the six adversarial slices from ADR-0008. Month 1 does not invent a seventh
 
 Composition targets for the **program** set (not the 17-item seed):
 
+<!-- provenance-allow: explanatory-example: composition targets and seed fractions are planning numbers, not measured quality -->
 | Bucket | Target share | Notes |
 | --- | --- | --- |
 | answerable adversarial (five slices) | ~83% | 10 each today |
@@ -137,6 +139,7 @@ Do **not** pad with easy rank-1 paraphrase clones to hit n≥50. n is necessary,
 
 A **difficulty predicate** is a pure function (or offline check script) that returns pass/fail for a slice or item. CI runs it. Failure message names the slice and the trivial items.
 
+<!-- provenance-allow: explanatory-example: difficulty predicates use rank thresholds as set-design rules, not published metrics -->
 | Slice | Predicate (Month 1 implement) | Fails when |
 | --- | --- | --- |
 | `paraphrase_only` | After production BM25 tokenize (lowercase, stopword strip), query ∩ target document tokens = ∅ | any shared term (already in `scripts/check_golden_integrity.py`) |
@@ -213,15 +216,15 @@ Design only here; implement after Month 1 exit.
 
 ## 5. v1.0.0 checklist (season gate)
 
-- [ ] This file (`docs/SEASON.md`) lists ≥15 invariants and which have tests.
-- [ ] Free-path eval program **n ≥ 50** with difficulty predicates; trivial all-rank-1 slices fail CI.
-- [ ] Scorecard HTML+JSON with `billed=false` and reportable vs directional labelling (I10–I11).
-- [ ] Ablation dense / sparse / hybrid / hybrid+rerank labeled as plumbing on free path.
-- [ ] Compose transcripts: grounded, refuse, `title=Filtering`, stream; failure captures for Month 3 classes.
-- [ ] Collection identity + incremental ingest + wrong-collection typed failure (Month 2).
-- [ ] Failure injection pack (Month 3) + honest load artifact.
-- [ ] CASESTUDY ≥1500 words with real trade-offs; no invented SOTA.
-- [ ] CI green on `main` with empty provider keys.
+- [x] This file (`docs/SEASON.md`) lists ≥15 invariants and which have tests.
+- [x] Free-path eval program **n ≥ 50** with difficulty predicates; trivial all-rank-1 slices fail CI.
+- [x] Scorecard HTML+JSON with `billed=false` and reportable vs directional labelling (I10–I11).
+- [x] Ablation dense / sparse / hybrid / hybrid+rerank labeled as plumbing on free path.
+- [x] Compose transcripts: grounded, refuse, `title=Filtering`, stream; failure captures for Month 3 classes.
+- [x] Collection identity + incremental ingest + wrong-collection typed failure (Month 2).
+- [x] Failure injection pack (Month 3) + honest load artifact.
+- [x] CASESTUDY ≥1500 words with real trade-offs; no invented SOTA.
+- [ ] CI green on `main` with empty provider keys (requires merge + Actions).
 - [ ] Release notes state what remains PLANNED (auth, rate limit, hosted quality baseline, hosted Qdrant, multi-worker cache).
 
 ---

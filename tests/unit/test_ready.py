@@ -29,11 +29,16 @@ def test_ready_payload_with_defaults(client: TestClient) -> None:
     """The default QDRANT_URL counts as configured, without contacting it."""
     payload = client.get("/v1/ready").json()
 
-    assert payload == {
-        "status": "ready",
-        "qdrant_configured": True,
-        "checks": {"settings": "ok"},
-    }
+    assert payload["status"] == "ready"
+    assert payload["qdrant_configured"] is True
+    assert payload["checks"]["settings"] == "ok"
+    assert "identity" in payload["checks"]
+    assert payload["collection"]
+    # Identity is offline: either computed from CORPUS_ROOT or nulls when absent.
+    assert "embedder_id" in payload
+    assert "chunker_version" in payload
+    assert "doc_count" in payload
+    assert "corpus_hash" in payload
 
 
 @pytest.mark.parametrize(

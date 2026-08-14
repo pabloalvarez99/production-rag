@@ -35,9 +35,13 @@
   <div class="banner" role="note">
     <strong>Contract / plumbing fixture — not SOTA, not quality, not billed.</strong>
     Deterministic local providers (<code>embedder=fake</code>, <code>llm=fake</code>,
-    <code>judge=none</code>). These numbers prove the evaluation pipeline and report
-    contract work end-to-end. They do <em>not</em> measure semantic retrieval or answer
-    quality. Do not cite them as a hosted baseline.
+    <code>judge=none</code>). Ablation configs
+    <code>dense</code> / <code>sparse</code> / <code>hybrid</code> /
+    <code>hybrid_rerank</code> are <em>plumbing labels only</em> on the free path.
+    These numbers prove the evaluation pipeline and report contract work end-to-end.
+    They do <em>not</em> measure semantic retrieval or answer quality. Do not cite them
+    as a hosted baseline. Free-path program set: see
+    <code>data/eval/golden-free-path.jsonl</code> (n≥50) + difficulty predicates.
   </div>
   <dl class="meta">
     <dt>billed</dt><dd><code>false</code></dd>

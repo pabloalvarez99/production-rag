@@ -1,0 +1,8 @@
+{
+  "method": "POST",
+  "path": "/v1/query/stream",
+  "status": 200,
+  "content_type": "text/event-stream; charset=utf-8",
+  "sse_preview": "event: meta\ndata: {\"request_id\":\"6c80e9ee-f0ed-4727-b108-d55a5a4c4615\"}\n\nevent: delta\ndata: {\"text\":\"Hybrid \"}\n\nevent: delta\ndata: {\"text\":\"search \"}\n\nevent: delta\ndata: {\"text\":\"uses RRF [1].\"}\n\nevent: result\ndata: {\"answer\":\"Hybrid search uses reciprocal rank fusion [1].\",\"citations\":[{\"marker\":1,\"chunk_id\":\"c1\",\"source_path\":\"sample/01-hybrid-search.md\",\"text\":\"Reciprocal rank fusion merges dense and sparse ranks.\",\"rank\":1,\"title\":\"Hybrid search\",\"heading_path\":null}],\"refused\":false,\"refusal_reason\":null,\"debug\":null,\"request_id\":\"6c80e9ee-f0ed-4727-b108-d55a5a4c4615\",\"deltas\":3}\n\n",
+  "cache_enabled": false
+}

@@ -1,0 +1,24 @@
+{
+  "method": "POST",
+  "path": "/v1/query",
+  "status": 200,
+  "body": {
+    "answer": "Hybrid search uses reciprocal rank fusion [1]. filtered={'title': 'Filtering'}",
+    "citations": [
+      {
+        "marker": 1,
+        "chunk_id": "c1",
+        "source_path": "qdrant/search/filtering.md",
+        "text": "Reciprocal rank fusion merges dense and sparse ranks.",
+        "rank": 1,
+        "title": "Filtering"
+      }
+    ],
+    "refused": false,
+    "refusal_reason": null
+  },
+  "filters": {
+    "title": "Filtering"
+  },
+  "note": "DEMO-DAY chip; source=sample is the wrong beat on sample corpus"
+}

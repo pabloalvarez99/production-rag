@@ -22,6 +22,12 @@ from production_rag.api.middleware import get_request_id
 from production_rag.api.schemas import QueryDebug, QueryRequest, QueryResponse
 from production_rag.config import Settings
 from production_rag.config_loader import ConfigFileError, YamlConfig, load_yaml_config
+from production_rag.corpus_identity import (
+    WrongCollectionError,
+    default_identity_path,
+    load_identity_sidecar,
+)
+from production_rag.generation.llm import LLMError
 from production_rag.generation.streaming import DeltaSink, StreamingTee
 from production_rag.ingest.cli import resolve_embedder
 from production_rag.query_cache import (
@@ -32,9 +38,11 @@ from production_rag.query_cache import (
     retrieval_fingerprint,
 )
 from production_rag.retrieval.cli import resolve_searchable_store
+from production_rag.retrieval.embeddings import EmbeddingError
 from production_rag.retrieval.filters import FilterError, FilterPolicy
 from production_rag.retrieval.hybrid import Retriever
 from production_rag.retrieval.rerank import RERANK_AUTO, build_reranker
+from production_rag.retrieval.store import CollectionMismatchError, VectorStoreError
 
 
 def _load_query_symbols() -> tuple[Callable[..., Any] | None, Callable[..., Any] | None]:
@@ -203,7 +211,22 @@ def execute_query(
         if "qdrant_collection" in settings.model_fields_set
         else config.qdrant.collection
     )
+    if payload.collection is not None and payload.collection != collection:
+        raise WrongCollectionError(
+            f"collection {payload.collection!r} does not match process collection "
+            f"{collection!r}",
+            collection=payload.collection,
+        )
     embedder_name = embedder_kind or payload.embedder
+    identity_sidecar = load_identity_sidecar(default_identity_path(collection)) or {}
+    corpus_identity_material = ""
+    if identity_sidecar.get("corpus_hash"):
+        corpus_identity_material = (
+            f"{identity_sidecar.get('corpus_hash', '')}|"
+            f"{identity_sidecar.get('chunker_version', '')}|"
+            f"{identity_sidecar.get('doc_count', '')}|"
+            f"{identity_sidecar.get('embedder_id', embedder_name)}"
+        )
     cache_status: CacheStatus | None = None
     cache_key: CacheKey | None = None
     if _cache_enabled(settings, config):
@@ -222,6 +245,7 @@ def execute_query(
                 rrf_k=config.retrieval.fusion.k,
                 rerank=payload.rerank,
             ),
+            corpus_identity=corpus_identity_material,
         )
         cached, cache_status = cache.get(cache_key)
         if cached is not None:
@@ -335,8 +359,14 @@ StreamingQueryExecutorDep = Annotated[
                 "`error_type` in the detail object."
             )
         },
+        status.HTTP_404_NOT_FOUND: {
+            "description": "Wrong collection name relative to this process identity."
+        },
         status.HTTP_503_SERVICE_UNAVAILABLE: {
-            "description": "Query pipeline is absent from this split milestone checkout."
+            "description": (
+                "Query pipeline absent, vector store unreachable, or provider failure. "
+                "Never a refusal."
+            )
         },
     },
     summary="Answer a question from indexed evidence",
@@ -368,10 +398,52 @@ def query(
                 "message": str(exc),
             },
         ) from exc
+    except WrongCollectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error_type": exc.error_type,
+                "collection": exc.collection,
+                "message": str(exc),
+                "refused": False,
+            },
+        ) from exc
+    except CollectionMismatchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error_type": "collection_mismatch",
+                "message": str(exc),
+                "refused": False,
+            },
+        ) from exc
+    except (VectorStoreError, EmbeddingError, LLMError) as exc:
+        # Dependency / provider failure is never a refusal. Clients branch on
+        # error_type; refused stays false so a soft-fail cannot be mistaken for
+        # "corpus has no answer".
+        error_type = (
+            "store_unavailable"
+            if isinstance(exc, VectorStoreError)
+            else "provider_error"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error_type": error_type,
+                "message": (
+                    "The query could not be completed because a service dependency failed."
+                ),
+                "refused": False,
+            },
+        ) from exc
     except QueryPipelineUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
+            detail={
+                "error_type": "pipeline_unavailable",
+                "message": str(exc),
+                "refused": False,
+            },
         ) from exc
 
 

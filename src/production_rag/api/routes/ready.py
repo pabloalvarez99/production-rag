@@ -1,22 +1,64 @@
 """Readiness endpoint.
 
 Readiness answers a different question from liveness: *should traffic be sent
-here?* At M0 the honest answer is "yes, if configuration parsed", because there
-is nothing downstream to be unready for yet. The response therefore carries the
-per-subsystem verdicts rather than folding them into the status code, so the
-shape stays stable when M1 adds a real Qdrant round-trip and this route starts
-returning 503.
+here?* Configuration still parses offline; collection identity is added so a
+reviewer can see *which* index the process believes it owns without dialing
+Qdrant on every probe.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 from fastapi import APIRouter, status
 
 from production_rag.api.deps import SettingsDep
 from production_rag.api.schemas import ReadyResponse
+from production_rag.corpus_identity import (
+    build_corpus_identity,
+    default_identity_path,
+    load_identity_sidecar,
+)
 
 router = APIRouter(tags=["health"])
 """Versioned router; mounted under ``Settings.api_prefix``."""
+
+
+def resolve_collection_identity(settings: SettingsDep) -> dict[str, object]:
+    """Load sidecar identity or compute from the configured corpus root.
+
+    Offline and free-path safe: hashing local files is allowed; opening a
+    Qdrant socket is not.
+    """
+    collection = settings.qdrant_collection
+    sidecar = load_identity_sidecar(default_identity_path(collection))
+    if sidecar is not None:
+        return {
+            "embedder_id": sidecar.get("embedder_id"),
+            "chunker_version": sidecar.get("chunker_version"),
+            "doc_count": sidecar.get("doc_count"),
+            "corpus_hash": sidecar.get("corpus_hash"),
+            "collection": sidecar.get("collection") or collection,
+            "source": "sidecar",
+        }
+    root = Path(settings.corpus_root)
+    if not root.exists():
+        return {
+            "embedder_id": settings.ready_embedder_id,
+            "chunker_version": None,
+            "doc_count": None,
+            "corpus_hash": None,
+            "collection": collection,
+            "source": "missing_corpus",
+        }
+    identity = build_corpus_identity(
+        corpus_root=root,
+        embedder_id=settings.ready_embedder_id,
+        collection=collection,
+    )
+    payload = identity.as_public_dict()
+    payload["source"] = "computed"
+    return payload
 
 
 @router.get(
@@ -24,21 +66,41 @@ router = APIRouter(tags=["health"])
     response_model=ReadyResponse,
     status_code=status.HTTP_200_OK,
     responses={
-        status.HTTP_200_OK: {"description": "Configuration is valid; the service accepts traffic."},
+        status.HTTP_200_OK: {
+            "description": "Configuration is valid; collection identity is advertised when known."
+        },
     },
     summary="Readiness probe",
     operation_id="ready",
 )
 async def ready(settings: SettingsDep) -> ReadyResponse:
-    """Report configuration readiness without performing any network IO.
+    """Report configuration readiness without dialing Qdrant.
 
     ``qdrant_configured`` reflects whether ``QDRANT_URL`` names an http(s)
-    endpoint. It deliberately does not open a socket: a probe that dials a
-    downstream on every call turns a slow dependency into a restart loop, and
-    it would make the M0 test suite depend on a running Qdrant.
+    endpoint. Collection identity fields come from a sidecar written at ingest
+    or from a free-path hash of ``CORPUS_ROOT`` / ``corpus_root``.
     """
+    identity = resolve_collection_identity(settings)
+    checks = {"settings": "ok", "identity": str(identity.get("source", "unknown"))}
     return ReadyResponse(
         status="ready",
         qdrant_configured=settings.qdrant_configured,
-        checks={"settings": "ok"},
+        checks=checks,
+        embedder_id=(
+            str(identity["embedder_id"]) if identity.get("embedder_id") is not None else None
+        ),
+        chunker_version=(
+            str(identity["chunker_version"])
+            if identity.get("chunker_version") is not None
+            else None
+        ),
+        doc_count=(
+            int(identity["doc_count"])  # type: ignore[arg-type]
+            if isinstance(identity.get("doc_count"), int)
+            else None
+        ),
+        corpus_hash=(
+            str(identity["corpus_hash"]) if identity.get("corpus_hash") is not None else None
+        ),
+        collection=str(identity.get("collection") or settings.qdrant_collection),
     )
